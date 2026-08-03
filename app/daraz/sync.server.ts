@@ -279,6 +279,25 @@ const PRIMARY_LOCATION_QUERY = `#graphql
   }
 `;
 
+// productCreate sets status: ACTIVE but doesn't publish the product to any
+// sales channel - without this, the admin shows "Preview" instead of "View"
+// and the product isn't actually visible on the storefront.
+const ONLINE_STORE_PUBLICATION_QUERY = `#graphql
+  query DarazImportOnlineStorePublication {
+    publications(first: 10) {
+      nodes { id name }
+    }
+  }
+`;
+
+const PUBLISH_MUTATION = `#graphql
+  mutation DarazImportPublish($id: ID!, $input: [PublicationInput!]!) {
+    publishablePublish(id: $id, input: $input) {
+      userErrors { field message }
+    }
+  }
+`;
+
 const SET_INVENTORY_MUTATION = `#graphql
   mutation DarazImportSetInventory($input: InventorySetOnHandQuantitiesInput!) {
     inventorySetOnHandQuantities(input: $input) {
@@ -381,13 +400,37 @@ export async function importDarazProduct(
   }
 
   if (detail.images.length > 0) {
-    await admin.graphql(PRODUCT_CREATE_MEDIA_MUTATION, {
+    const mediaResponse = await admin.graphql(PRODUCT_CREATE_MEDIA_MUTATION, {
       variables: {
         productId: shopifyProductGid,
         media: detail.images.map((url) => ({
           originalSource: url,
           mediaContentType: "IMAGE",
         })),
+      },
+    });
+    const mediaJson = await mediaResponse.json();
+    const mediaErrors = mediaJson.data?.productCreateMedia?.mediaUserErrors ?? [];
+    if (mediaErrors.length > 0) {
+      // Don't fail the whole import over images - the product/variants are
+      // already created and worth keeping either way.
+      console.error(
+        `Daraz import: productCreateMedia errors for ${shopifyProductId}:`,
+        mediaErrors,
+      );
+    }
+  }
+
+  const publicationsResponse = await admin.graphql(ONLINE_STORE_PUBLICATION_QUERY);
+  const publicationsJson = await publicationsResponse.json();
+  const onlineStorePublicationId = (
+    publicationsJson.data?.publications?.nodes as Array<{ id: string; name: string }> | undefined
+  )?.find((p) => p.name === "Online Store")?.id;
+  if (onlineStorePublicationId) {
+    await admin.graphql(PUBLISH_MUTATION, {
+      variables: {
+        id: shopifyProductGid,
+        input: [{ publicationId: onlineStorePublicationId }],
       },
     });
   }

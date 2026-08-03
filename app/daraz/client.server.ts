@@ -357,6 +357,22 @@ export async function getProductDetail(
   };
 }
 
+// Debug-only: returns the untouched raw JSON for a product, bypassing all
+// the field-name guessing above. Used to actually see Daraz's real response
+// shape instead of continuing to guess at it (e.g. where images live).
+export async function getRawProductDetail(
+  { accessToken, country }: DarazProductClientOptions,
+  itemId: string,
+): Promise<unknown> {
+  return request({
+    apiPath: "/product/item/get",
+    params: { item_id: itemId },
+    accessToken,
+    apiHost: apiHostFor(country),
+    method: "GET",
+  });
+}
+
 export interface DarazCategoryNode {
   id: string;
   name: string;

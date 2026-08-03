@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
@@ -9,6 +9,8 @@ import {
   Button,
   EmptyState,
   InlineStack,
+  BlockStack,
+  TextField,
   ResourceList,
   ResourceItem,
 } from "@shopify/polaris";
@@ -16,7 +18,7 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
-import { getProducts } from "../daraz/client.server";
+import { getProducts, getRawProductDetail } from "../daraz/client.server";
 import { importDarazProduct } from "../daraz/sync.server";
 
 const PAGE_SIZE = 20;
@@ -71,13 +73,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
+
+  if (formData.get("intent") === "debugRaw") {
+    const itemId = String(formData.get("itemId") ?? "");
+    try {
+      const darazSession = await getValidAccessToken(session.shop);
+      if (!darazSession) {
+        return { intent: "debugRaw" as const, raw: null, error: "Not connected to Daraz" };
+      }
+      const raw = await getRawProductDetail(
+        { accessToken: darazSession.accessToken, country: darazSession.country },
+        itemId,
+      );
+      return { intent: "debugRaw" as const, raw: JSON.stringify(raw, null, 2), error: null };
+    } catch (error) {
+      return {
+        intent: "debugRaw" as const,
+        raw: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   const itemId = String(formData.get("itemId") ?? "");
 
   try {
     const shopifyProductId = await importDarazProduct(session.shop, itemId);
-    return { itemId, ok: true as const, shopifyProductId };
+    return { intent: "import" as const, itemId, ok: true as const, shopifyProductId };
   } catch (error) {
     return {
+      intent: "import" as const,
       itemId,
       ok: false as const,
       error: error instanceof Error ? error.message : String(error),
@@ -88,16 +113,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function ImportFromDaraz() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const debugFetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
+  const [debugItemId, setDebugItemId] = useState("");
 
   useEffect(() => {
-    if (!fetcher.data) return;
+    if (!fetcher.data || fetcher.data.intent !== "import") return;
     if (fetcher.data.ok) {
       shopify.toast.show("Imported to Shopify");
     } else {
       shopify.toast.show(fetcher.data.error ?? "Import failed", { isError: true });
     }
   }, [fetcher.data, shopify]);
+
+  const rawResult = debugFetcher.data?.intent === "debugRaw" ? debugFetcher.data : null;
+  const isFetchingRaw = debugFetcher.state !== "idle";
 
   if (!data.connected) {
     return (
@@ -122,6 +152,64 @@ export default function ImportFromDaraz() {
   return (
     <Page>
       <TitleBar title="Import from Daraz" />
+      <div style={{ marginBottom: "1rem" }}>
+        <Card>
+          <BlockStack gap="200">
+            <Text as="h2" variant="headingMd">
+              Inspect raw Daraz data
+            </Text>
+            <Text as="p" tone="subdued" variant="bodySm">
+              Temporary debug tool - shows exactly what Daraz returns for an
+              item, to pin down real field names (e.g. where images live)
+              instead of guessing.
+            </Text>
+            <InlineStack gap="200" blockAlign="end">
+              <div style={{ minWidth: 240 }}>
+                <TextField
+                  label="Daraz item ID"
+                  labelHidden
+                  placeholder="e.g. 275503673"
+                  value={debugItemId}
+                  onChange={setDebugItemId}
+                  autoComplete="off"
+                />
+              </div>
+              <Button
+                loading={isFetchingRaw}
+                disabled={!debugItemId}
+                onClick={() =>
+                  debugFetcher.submit(
+                    { intent: "debugRaw", itemId: debugItemId },
+                    { method: "POST" },
+                  )
+                }
+              >
+                Show raw data
+              </Button>
+            </InlineStack>
+            {rawResult?.error && (
+              <Text as="p" tone="critical" variant="bodySm">
+                {rawResult.error}
+              </Text>
+            )}
+            {rawResult?.raw && (
+              <div
+                style={{
+                  maxHeight: 400,
+                  overflow: "auto",
+                  background: "var(--p-color-bg-surface-secondary)",
+                  padding: "1rem",
+                  borderRadius: 8,
+                }}
+              >
+                <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 12 }}>
+                  {rawResult.raw}
+                </pre>
+              </div>
+            )}
+          </BlockStack>
+        </Card>
+      </div>
       <Card padding="0">
         <ResourceList
           resourceName={{ singular: "Daraz product", plural: "Daraz products" }}
