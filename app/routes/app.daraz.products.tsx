@@ -3,12 +3,14 @@ import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
   Card,
-  IndexTable,
   Badge,
   Text,
   Button,
   EmptyState,
   InlineStack,
+  BlockStack,
+  Divider,
+  Thumbnail,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { useEffect } from "react";
@@ -185,50 +187,54 @@ export default function DarazProducts() {
         </div>
       )}
       <Card padding="0">
-        <IndexTable
-          resourceName={{ singular: "product", plural: "products" }}
-          itemCount={data.products.length}
-          headings={[
-            { title: "Product" },
-            { title: "Status" },
-            { title: "Daraz item" },
-            { title: "Actions" },
-          ]}
-          selectable={false}
-        >
+        <BlockStack gap="0">
           {data.products.map((product, index) => (
-            <IndexTable.Row id={product.id} key={product.id} position={index}>
-              <IndexTable.Cell>
-                <Text as="span" variant="bodyMd" fontWeight="semibold">
-                  {product.title}
-                </Text>
-              </IndexTable.Cell>
-              <IndexTable.Cell>
-                <Badge tone={STATUS_TONE[product.syncStatus]}>
-                  {product.syncStatus}
-                </Badge>
-              </IndexTable.Cell>
-              <IndexTable.Cell>{product.darazItemId ?? "—"}</IndexTable.Cell>
-              <IndexTable.Cell>
-                <InlineStack gap="200">
-                  <Button url={`/app/daraz/products/${product.id}`}>
-                    {product.syncStatus === "unmapped" ? "Map category" : "Edit mapping"}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    disabled={product.syncStatus === "unmapped"}
-                    loading={syncingProductId === product.id}
-                    onClick={() =>
-                      fetcher.submit({ productId: product.id }, { method: "POST" })
-                    }
-                  >
-                    Sync now
-                  </Button>
+            <div key={product.id}>
+              {index > 0 && <Divider />}
+              <div style={{ padding: "1rem" }}>
+                <InlineStack align="space-between" blockAlign="center" wrap>
+                  <InlineStack gap="300" blockAlign="center">
+                    <Thumbnail
+                      source={product.imageUrl ?? ""}
+                      alt={product.title}
+                      size="small"
+                    />
+                    <BlockStack gap="100">
+                      <Text as="span" variant="bodyMd" fontWeight="semibold">
+                        {product.title}
+                      </Text>
+                      <InlineStack gap="200" blockAlign="center">
+                        <Badge tone={STATUS_TONE[product.syncStatus]}>
+                          {product.syncStatus}
+                        </Badge>
+                        {product.darazItemId && (
+                          <Text as="span" tone="subdued" variant="bodySm">
+                            Daraz item {product.darazItemId}
+                          </Text>
+                        )}
+                      </InlineStack>
+                    </BlockStack>
+                  </InlineStack>
+                  <InlineStack gap="200">
+                    <Button url={`/app/daraz/products/${product.id}`}>
+                      {product.syncStatus === "unmapped" ? "Map category" : "Edit mapping"}
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={product.syncStatus === "unmapped"}
+                      loading={syncingProductId === product.id}
+                      onClick={() =>
+                        fetcher.submit({ productId: product.id }, { method: "POST" })
+                      }
+                    >
+                      Sync now
+                    </Button>
+                  </InlineStack>
                 </InlineStack>
-              </IndexTable.Cell>
-            </IndexTable.Row>
+              </div>
+            </div>
           ))}
-        </IndexTable>
+        </BlockStack>
       </Card>
     </Page>
   );
