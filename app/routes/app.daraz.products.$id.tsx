@@ -10,6 +10,7 @@ import {
   Button,
   Text,
   Divider,
+  Select,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
@@ -17,7 +18,9 @@ import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
 import {
   getCategoryAttributes,
+  getCategoryTree,
   getProducts,
+  type DarazCategoryNode,
   type DarazExistingProduct,
 } from "../daraz/client.server";
 import { syncProduct, clearPendingSyncJobs } from "../daraz/sync.server";
@@ -48,6 +51,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
   });
 
+  // Best-effort: an empty tree just means the picker falls back to manual
+  // category ID entry, it never blocks the page from loading.
+  let categoryTree: DarazCategoryNode[] = [];
+  try {
+    const darazSession = await getValidAccessToken(session.shop);
+    if (darazSession) {
+      categoryTree = await getCategoryTree({
+        accessToken: darazSession.accessToken,
+        country: darazSession.country,
+      });
+    }
+  } catch {
+    categoryTree = [];
+  }
+
   return {
     productId,
     title,
@@ -57,6 +75,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     attributes: mapping?.attributesJson
       ? (JSON.parse(mapping.attributesJson) as Record<string, string>)
       : {},
+    categoryTree,
   };
 };
 
@@ -202,6 +221,18 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
   return { intent: "save" as const, ok: true as const };
 };
 
+function findCategoryPath(
+  tree: DarazCategoryNode[],
+  targetId: string,
+): DarazCategoryNode[] | null {
+  for (const node of tree) {
+    if (node.id === targetId) return [node];
+    const childPath = findCategoryPath(node.children, targetId);
+    if (childPath) return [node, ...childPath];
+  }
+  return null;
+}
+
 export default function ProductMappingPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
@@ -210,6 +241,18 @@ export default function ProductMappingPage() {
 
   const [query, setQuery] = useState(data.defaultSku);
   const [categoryId, setCategoryId] = useState(data.categoryId);
+  const [categoryPath, setCategoryPath] = useState<DarazCategoryNode[]>(
+    () => findCategoryPath(data.categoryTree, data.categoryId) ?? [],
+  );
+
+  const selectCategoryAtLevel = (level: number, id: string) => {
+    const options = level === 0 ? data.categoryTree : categoryPath[level - 1].children;
+    const node = options.find((n) => n.id === id);
+    if (!node) return;
+    const newPath = [...categoryPath.slice(0, level), node];
+    setCategoryPath(newPath);
+    setCategoryId(node.isLeaf ? node.id : "");
+  };
   const [pairs, setPairs] = useState<Array<{ key: string; value: string }>>(
     Object.entries(data.attributes).map(([key, value]) => ({ key, value })),
   );
@@ -361,14 +404,52 @@ export default function ProductMappingPage() {
           <Text as="h2" variant="headingMd">
             Daraz category
           </Text>
+          {data.categoryTree.length > 0 ? (
+            <BlockStack gap="200">
+              {[
+                data.categoryTree,
+                ...categoryPath.map((n) => n.children),
+              ]
+                .filter((level) => level.length > 0)
+                .map((levelOptions, level) => (
+                  <div key={level} style={{ maxWidth: 320 }}>
+                    <Select
+                      label={level === 0 ? "Category" : "Subcategory"}
+                      labelHidden={level > 0}
+                      options={[
+                        { label: "Select…", value: "" },
+                        ...levelOptions.map((n) => ({ label: n.name, value: n.id })),
+                      ]}
+                      value={categoryPath[level]?.id ?? ""}
+                      onChange={(value) => selectCategoryAtLevel(level, value)}
+                    />
+                  </div>
+                ))}
+              {categoryId ? (
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Selected category ID: {categoryId}
+                </Text>
+              ) : (
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Keep narrowing down until there are no more subcategories to pick.
+                </Text>
+              )}
+            </BlockStack>
+          ) : (
+            <Text as="p" tone="subdued" variant="bodySm">
+              Couldn't load Daraz's category list - enter the category ID manually below.
+            </Text>
+          )}
           <InlineStack gap="200" blockAlign="end">
             <div style={{ minWidth: 240 }}>
               <TextField
-                label="Category ID"
-                labelHidden
+                label="Category ID (manual override)"
                 placeholder="e.g. 12345"
                 value={categoryId}
-                onChange={setCategoryId}
+                onChange={(value) => {
+                  setCategoryId(value);
+                  setCategoryPath([]);
+                }}
                 autoComplete="off"
               />
             </div>
@@ -377,7 +458,6 @@ export default function ProductMappingPage() {
             </Button>
           </InlineStack>
           <Text as="p" tone="subdued" variant="bodySm">
-            Find the category ID in your Daraz Seller Center category picker.
             Suggested attribute names are best-effort - add or edit any
             attribute Daraz requires for this category.
           </Text>

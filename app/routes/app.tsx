@@ -26,6 +26,7 @@ export default function App() {
         </Link>
         <Link to="/app/daraz">Daraz connection</Link>
         <Link to="/app/daraz/products">Daraz products</Link>
+        <Link to="/app/daraz/import">Import from Daraz</Link>
       </NavMenu>
       <Outlet />
     </AppProvider>

@@ -60,18 +60,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!darazSession) {
         return { testResult: { ok: false as const, message: "Not connected to Daraz" } };
       }
-      const result = (await getCategoryTree({
+      const categories = await getCategoryTree({
         accessToken: darazSession.accessToken,
         country: darazSession.country,
-      })) as { data?: unknown };
-      const categoryCount = Array.isArray(result.data) ? result.data.length : null;
+      });
       return {
         testResult: {
           ok: true as const,
-          message:
-            categoryCount !== null
-              ? `Connected - fetched ${categoryCount} top-level categories from Daraz`
-              : "Connected - Daraz API call succeeded",
+          message: `Connected - fetched ${categories.length} top-level categories from Daraz`,
         },
       };
     } catch (error) {

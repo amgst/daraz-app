@@ -249,12 +249,13 @@ export interface DarazExistingProduct {
 }
 
 // Searches the seller's existing Daraz catalog - used to link an already-listed
-// Daraz product to a Shopify product instead of creating a duplicate. Verify
-// the exact filter/response shape against the live docs before relying on it;
-// this follows the general IOP "/products/get" pagination pattern.
+// Daraz product to a Shopify product instead of creating a duplicate, or to
+// browse the catalog for import. Verify the exact filter/response shape
+// against the live docs before relying on it; this follows the general
+// IOP "/products/get" pagination pattern.
 export async function getProducts(
   { accessToken, country }: DarazProductClientOptions,
-  filter: { sellerSku?: string; search?: string },
+  filter: { sellerSku?: string; search?: string; limit?: number; offset?: number },
 ): Promise<DarazExistingProduct[]> {
   const result = await request<{
     data: { products: DarazExistingProduct[] };
@@ -262,8 +263,8 @@ export async function getProducts(
     apiPath: "/products/get",
     params: {
       filter: "all",
-      limit: "20",
-      offset: "0",
+      limit: String(filter.limit ?? 20),
+      offset: String(filter.offset ?? 0),
       ...(filter.sellerSku ? { sku_seller_list: JSON.stringify([filter.sellerSku]) } : {}),
       ...(filter.search ? { search: filter.search } : {}),
     },
@@ -274,16 +275,97 @@ export async function getProducts(
   return result.data?.products ?? [];
 }
 
+export interface DarazProductDetail extends DarazExistingProduct {
+  name: string;
+  description: string;
+  images: string[];
+}
+
+// Full item detail (images, description) for a single Daraz product - the
+// summary from getProducts() above doesn't carry enough to create a
+// reasonable Shopify product from. Same caveat: verify the exact response
+// shape against the live docs; falls back to empty strings/arrays rather
+// than throwing if fields are missing.
+export async function getProductDetail(
+  { accessToken, country }: DarazProductClientOptions,
+  itemId: string,
+): Promise<DarazProductDetail> {
+  const result = await request<{
+    data: {
+      item_id: string;
+      primary_category: string;
+      attributes: { name?: string; description?: string; short_description?: string };
+      images?: string[];
+      skus: Array<{ SkuId: string; SellerSku: string; price: string; quantity: string; Images?: string[] }>;
+    };
+  }>({
+    apiPath: "/product/item/get",
+    params: { item_id: itemId },
+    accessToken,
+    apiHost: apiHostFor(country),
+    method: "GET",
+  });
+
+  const data = result.data;
+  const images =
+    data.images ?? data.skus.flatMap((sku) => sku.Images ?? []).filter((v, i, a) => a.indexOf(v) === i);
+
+  return {
+    item_id: data.item_id,
+    primary_category: data.primary_category,
+    attributes: data.attributes,
+    skus: data.skus,
+    name: data.attributes?.name ?? `Daraz item ${data.item_id}`,
+    description: data.attributes?.description ?? data.attributes?.short_description ?? "",
+    images,
+  };
+}
+
+export interface DarazCategoryNode {
+  id: string;
+  name: string;
+  isLeaf: boolean;
+  children: DarazCategoryNode[];
+}
+
+// Normalizes the raw category tree response into a consistent shape - the
+// exact field names (category_id vs id, children vs sub_category_list) are
+// unverified against live docs, so this tries the common IOP/Lazada variants
+// and silently drops anything it can't recognize rather than throwing.
+function normalizeCategoryNode(raw: unknown): DarazCategoryNode | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const id = obj.category_id ?? obj.categoryId ?? obj.id;
+  const name = obj.name ?? obj.name_local ?? obj.category_name;
+  if (id === undefined || id === null || typeof name !== "string") return null;
+
+  const rawChildren =
+    (obj.children as unknown[]) ??
+    (obj.sub_category_list as unknown[]) ??
+    (obj.child_category_list as unknown[]) ??
+    [];
+  const children = Array.isArray(rawChildren)
+    ? rawChildren.map(normalizeCategoryNode).filter((n): n is DarazCategoryNode => n !== null)
+    : [];
+
+  const isLeaf =
+    typeof obj.leaf === "boolean" ? obj.leaf : children.length === 0;
+
+  return { id: String(id), name, isLeaf, children };
+}
+
 export async function getCategoryTree(
   { accessToken, country }: DarazProductClientOptions,
-): Promise<unknown> {
-  return request({
+): Promise<DarazCategoryNode[]> {
+  const result = await request<{ data?: unknown[] }>({
     apiPath: "/category/tree/get",
     params: { language_code: "en" },
     accessToken,
     apiHost: apiHostFor(country),
     method: "GET",
   });
+  const raw = Array.isArray(result.data) ? result.data : [];
+  return raw.map(normalizeCategoryNode).filter((n): n is DarazCategoryNode => n !== null);
 }
 
 export async function getCategoryAttributes(

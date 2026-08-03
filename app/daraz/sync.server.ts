@@ -7,6 +7,7 @@ import {
   updateProduct,
   updatePriceQuantity,
   uploadImage,
+  getProductDetail,
   type CreateProductInput,
 } from "./client.server";
 
@@ -226,4 +227,156 @@ export async function clearPendingSyncJobs(
     where: { shop, shopifyProductId, status: "pending" },
     data: { status: "done" },
   });
+}
+
+const PRODUCT_CREATE_MUTATION = `#graphql
+  mutation DarazImportProductCreate($product: ProductCreateInput!) {
+    productCreate(product: $product) {
+      product { id }
+      userErrors { field message }
+    }
+  }
+`;
+
+const VARIANTS_BULK_CREATE_MUTATION = `#graphql
+  mutation DarazImportVariantsCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+    productVariantsBulkCreate(productId: $productId, variants: $variants) {
+      productVariants { id inventoryItem { id } }
+      userErrors { field message }
+    }
+  }
+`;
+
+const PRODUCT_CREATE_MEDIA_MUTATION = `#graphql
+  mutation DarazImportProductMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+    productCreateMedia(productId: $productId, media: $media) {
+      mediaUserErrors { field message }
+    }
+  }
+`;
+
+const PRIMARY_LOCATION_QUERY = `#graphql
+  query DarazImportPrimaryLocation {
+    locations(first: 1) { nodes { id } }
+  }
+`;
+
+const SET_INVENTORY_MUTATION = `#graphql
+  mutation DarazImportSetInventory($input: InventorySetOnHandQuantitiesInput!) {
+    inventorySetOnHandQuantities(input: $input) {
+      userErrors { field message }
+    }
+  }
+`;
+
+// Creates a brand-new Shopify product from a Daraz listing that has no
+// Shopify counterpart yet (the reverse of syncProduct, which goes
+// Shopify -> Daraz). Used by the "Import from Daraz" page.
+export async function importDarazProduct(
+  shop: string,
+  darazItemId: string,
+): Promise<string> {
+  const darazSession = await getValidAccessToken(shop);
+  if (!darazSession) {
+    throw new Error(`Shop ${shop} has no connected Daraz account`);
+  }
+  const darazOpts = {
+    accessToken: darazSession.accessToken,
+    country: darazSession.country,
+  };
+
+  const detail = await getProductDetail(darazOpts, darazItemId);
+  const { admin } = await unauthenticated.admin(shop);
+
+  const createResponse = await admin.graphql(PRODUCT_CREATE_MUTATION, {
+    variables: {
+      product: {
+        title: detail.name,
+        descriptionHtml: detail.description,
+        productType: detail.primary_category,
+      },
+    },
+  });
+  const createJson = await createResponse.json();
+  const createErrors = createJson.data?.productCreate?.userErrors ?? [];
+  if (createErrors.length > 0) {
+    throw new Error(
+      `Shopify productCreate failed: ${createErrors.map((e: { message: string }) => e.message).join(", ")}`,
+    );
+  }
+  const shopifyProductGid = createJson.data?.productCreate?.product?.id as string;
+  const shopifyProductId = shopifyProductGid.split("/").pop()!;
+
+  const variantsResponse = await admin.graphql(VARIANTS_BULK_CREATE_MUTATION, {
+    variables: {
+      productId: shopifyProductGid,
+      variants: detail.skus.map((sku) => ({
+        price: sku.price,
+        inventoryItem: { sku: sku.SellerSku },
+      })),
+    },
+  });
+  const variantsJson = await variantsResponse.json();
+  const variantErrors = variantsJson.data?.productVariantsBulkCreate?.userErrors ?? [];
+  if (variantErrors.length > 0) {
+    throw new Error(
+      `Shopify variant creation failed: ${variantErrors.map((e: { message: string }) => e.message).join(", ")}`,
+    );
+  }
+  const createdVariants = (variantsJson.data?.productVariantsBulkCreate?.productVariants ??
+    []) as Array<{ id: string; inventoryItem: { id: string } }>;
+
+  if (detail.images.length > 0) {
+    await admin.graphql(PRODUCT_CREATE_MEDIA_MUTATION, {
+      variables: {
+        productId: shopifyProductGid,
+        media: detail.images.map((url) => ({
+          originalSource: url,
+          mediaContentType: "IMAGE",
+        })),
+      },
+    });
+  }
+
+  const locationResponse = await admin.graphql(PRIMARY_LOCATION_QUERY);
+  const locationJson = await locationResponse.json();
+  const locationId = locationJson.data?.locations?.nodes?.[0]?.id as string | undefined;
+
+  if (locationId) {
+    await admin.graphql(SET_INVENTORY_MUTATION, {
+      variables: {
+        input: {
+          reason: "correction",
+          setQuantities: createdVariants.map((variant, index) => ({
+            inventoryItemId: variant.inventoryItem.id,
+            locationId,
+            quantity: Number(detail.skus[index]?.quantity ?? 0),
+          })),
+        },
+      },
+    });
+  }
+
+  await db.productMapping.upsert({
+    where: { shop_shopifyProductId: { shop, shopifyProductId } },
+    create: {
+      shop,
+      shopifyProductId,
+      darazItemId: detail.item_id,
+      darazSkuId: detail.skus[0]?.SkuId ?? null,
+      darazCategoryId: detail.primary_category,
+      syncStatus: "synced",
+      lastSyncedAt: new Date(),
+    },
+    update: {
+      darazItemId: detail.item_id,
+      darazSkuId: detail.skus[0]?.SkuId ?? null,
+      darazCategoryId: detail.primary_category,
+      syncStatus: "synced",
+      lastSyncedAt: new Date(),
+      lastError: null,
+    },
+  });
+
+  return shopifyProductId;
 }
