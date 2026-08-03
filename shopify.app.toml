@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "d3fa46486613894daec5fcd4aa6a3806"
-application_url = "https://example.com"
+application_url = "https://daraz-app-seven.vercel.app"
 embedded = true
 name = "daraz"
 
@@ -35,4 +35,4 @@ api_version = "2026-07"
   topics = [ "inventory_levels/update" ]
 
 [auth]
-redirect_urls = [ ]
+redirect_urls = [ "https://daraz-app-seven.vercel.app/auth/callback" ]
