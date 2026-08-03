@@ -8,7 +8,9 @@ import {
   updatePriceQuantity,
   uploadImage,
   getProductDetail,
+  effectivePrice,
   type CreateProductInput,
+  type DarazSkuDetail,
 } from "./client.server";
 
 const PRODUCT_QUERY = `#graphql
@@ -229,13 +231,20 @@ export async function clearPendingSyncJobs(
   });
 }
 
+// When productOptions is declared, Shopify auto-creates one variant per
+// combination of option values - selectedOptions on each is what lets us
+// match each auto-created variant back to the Daraz SKU it should carry.
 const PRODUCT_CREATE_MUTATION = `#graphql
   mutation DarazImportProductCreate($product: ProductCreateInput!) {
     productCreate(product: $product) {
       product {
         id
-        variants(first: 1) {
-          nodes { id inventoryItem { id } }
+        variants(first: 100) {
+          nodes {
+            id
+            inventoryItem { id }
+            selectedOptions { name value }
+          }
         }
       }
       userErrors { field message }
@@ -243,10 +252,10 @@ const PRODUCT_CREATE_MUTATION = `#graphql
   }
 `;
 
-// productCreate always auto-creates one "Default Title" variant even with no
-// variant input - productVariantsBulkCreate-ing on top of that collides with
-// it ("The variant 'Default Title' already exists"). Update that existing
-// variant with the first Daraz SKU instead of creating a competing one.
+// productCreate always auto-creates variant(s) even with no explicit variant
+// input - productVariantsBulkCreate-ing on top of those collides with them
+// ("The variant 'Default Title' already exists"). Update the auto-created
+// variants with matching Daraz SKUs instead of creating competing ones.
 const VARIANTS_BULK_UPDATE_MUTATION = `#graphql
   mutation DarazImportVariantsUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
     productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -325,12 +334,28 @@ export async function importDarazProduct(
   const detail = await getProductDetail(darazOpts, darazItemId);
   const { admin } = await unauthenticated.admin(shop);
 
+  // Build Shopify product options from Daraz's variation schema, using only
+  // the values actually present across this item's SKUs (e.g. {name:
+  // "Color Family", values: [{name: "Brown"}, {name: "Red"}]}). Declaring
+  // these at creation time makes Shopify auto-create one real variant per
+  // combination, instead of a single unlabeled "Default Title" variant.
+  const productOptions = detail.variations
+    .map((v) => ({
+      name: v.label,
+      values: Array.from(
+        new Set(detail.skus.map((s) => s.saleProp[v.key]).filter((val): val is string => Boolean(val))),
+      ).map((name) => ({ name })),
+    }))
+    .filter((opt) => opt.values.length > 0);
+
   const createResponse = await admin.graphql(PRODUCT_CREATE_MUTATION, {
     variables: {
       product: {
         title: detail.name,
         descriptionHtml: detail.description,
         productType: detail.primary_category,
+        ...(detail.brand ? { vendor: detail.brand } : {}),
+        ...(productOptions.length > 0 ? { productOptions } : {}),
       },
     },
   });
@@ -343,25 +368,71 @@ export async function importDarazProduct(
   }
   const shopifyProductGid = createJson.data?.productCreate?.product?.id as string;
   const shopifyProductId = shopifyProductGid.split("/").pop()!;
-  const defaultVariant = createJson.data?.productCreate?.product?.variants?.nodes?.[0] as
-    | { id: string; inventoryItem: { id: string } }
-    | undefined;
+  const initialVariants = (createJson.data?.productCreate?.product?.variants?.nodes ?? []) as Array<{
+    id: string;
+    inventoryItem: { id: string };
+    selectedOptions: Array<{ name: string; value: string }>;
+  }>;
 
-  const allVariants: Array<{ id: string; inventoryItem: { id: string } }> = [];
+  // Match each Daraz SKU to the auto-created variant whose option values
+  // correspond to that SKU's saleProp (e.g. Color Family = Brown). Falls
+  // back to positional matching when there's exactly one variant/SKU (the
+  // common no-variation case) or no options were declared at all.
+  const optionSignature = (values: Record<string, string>) =>
+    Object.entries(values)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("|");
 
-  if (detail.skus.length > 0 && defaultVariant) {
-    const [firstSku, ...restSkus] = detail.skus;
+  const variantBySignature = new Map(
+    initialVariants.map((v) => [
+      optionSignature(Object.fromEntries(v.selectedOptions.map((o) => [o.name, o.value]))),
+      v,
+    ]),
+  );
 
+  const pairs: Array<{
+    variant: { id: string; inventoryItem: { id: string } };
+    sku: DarazSkuDetail;
+  }> = [];
+  const unmatchedSkus: DarazSkuDetail[] = [];
+
+  for (const sku of detail.skus) {
+    const skuOptionValues = Object.fromEntries(
+      detail.variations
+        .map((v) => [v.label, sku.saleProp[v.key]] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[1])),
+    );
+    const signature = optionSignature(skuOptionValues);
+    const variant =
+      variantBySignature.get(signature) ??
+      (initialVariants.length === 1 && detail.skus.length === 1 ? initialVariants[0] : undefined);
+    if (variant) {
+      pairs.push({ variant, sku });
+      variantBySignature.delete(signature);
+    } else {
+      unmatchedSkus.push(sku);
+    }
+  }
+
+  if (pairs.length > 0) {
     const updateResponse = await admin.graphql(VARIANTS_BULK_UPDATE_MUTATION, {
       variables: {
         productId: shopifyProductGid,
-        variants: [
-          {
-            id: defaultVariant.id,
-            price: firstSku.price,
-            inventoryItem: { sku: firstSku.SellerSku },
-          },
-        ],
+        variants: pairs.map(({ variant, sku }) => {
+          const { price, compareAtPrice } = effectivePrice(sku);
+          return {
+            id: variant.id,
+            price,
+            ...(compareAtPrice ? { compareAtPrice } : {}),
+            inventoryItem: {
+              sku: sku.SellerSku,
+              ...(sku.packageWeightKg
+                ? { measurement: { weight: { value: sku.packageWeightKg, unit: "KILOGRAMS" } } }
+                : {}),
+            },
+          };
+        }),
       },
     });
     const updateJson = await updateResponse.json();
@@ -371,32 +442,37 @@ export async function importDarazProduct(
         `Shopify variant update failed: ${updateErrors.map((e: { message: string }) => e.message).join(", ")}`,
       );
     }
-    allVariants.push(
-      ...((updateJson.data?.productVariantsBulkUpdate?.productVariants ?? []) as typeof allVariants),
-    );
+  }
 
-    if (restSkus.length > 0) {
-      const createResponse = await admin.graphql(VARIANTS_BULK_CREATE_MUTATION, {
-        variables: {
-          productId: shopifyProductGid,
-          variants: restSkus.map((sku) => ({
-            price: sku.price,
+  // Rare edge case: more Daraz SKUs than Shopify auto-created variants for
+  // (e.g. no variation schema but multiple SKUs anyway) - create the rest
+  // as unlabeled additional variants rather than dropping them.
+  if (unmatchedSkus.length > 0) {
+    const extraCreateResponse = await admin.graphql(VARIANTS_BULK_CREATE_MUTATION, {
+      variables: {
+        productId: shopifyProductGid,
+        variants: unmatchedSkus.map((sku) => {
+          const { price, compareAtPrice } = effectivePrice(sku);
+          return {
+            price,
+            ...(compareAtPrice ? { compareAtPrice } : {}),
             inventoryItem: { sku: sku.SellerSku },
-          })),
-        },
-      });
-      const createVariantsJson = await createResponse.json();
-      const createVariantErrors = createVariantsJson.data?.productVariantsBulkCreate?.userErrors ?? [];
-      if (createVariantErrors.length > 0) {
-        throw new Error(
-          `Shopify variant creation failed: ${createVariantErrors.map((e: { message: string }) => e.message).join(", ")}`,
-        );
-      }
-      allVariants.push(
-        ...((createVariantsJson.data?.productVariantsBulkCreate?.productVariants ??
-          []) as typeof allVariants),
+          };
+        }),
+      },
+    });
+    const extraCreateJson = await extraCreateResponse.json();
+    const extraCreateErrors = extraCreateJson.data?.productVariantsBulkCreate?.userErrors ?? [];
+    if (extraCreateErrors.length > 0) {
+      throw new Error(
+        `Shopify variant creation failed: ${extraCreateErrors.map((e: { message: string }) => e.message).join(", ")}`,
       );
     }
+    const extraVariants = (extraCreateJson.data?.productVariantsBulkCreate?.productVariants ??
+      []) as Array<{ id: string; inventoryItem: { id: string } }>;
+    unmatchedSkus.forEach((sku, i) => {
+      if (extraVariants[i]) pairs.push({ variant: extraVariants[i], sku });
+    });
   }
 
   if (detail.images.length > 0) {
@@ -454,10 +530,10 @@ export async function importDarazProduct(
       variables: {
         input: {
           reason: "correction",
-          setQuantities: allVariants.map((variant, index) => ({
+          setQuantities: pairs.map(({ variant, sku }) => ({
             inventoryItemId: variant.inventoryItem.id,
             locationId,
-            quantity: Number(detail.skus[index]?.quantity ?? 0),
+            quantity: Number(sku.quantity ?? 0),
           })),
         },
       },

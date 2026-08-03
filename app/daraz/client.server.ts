@@ -299,17 +299,41 @@ export async function getProducts(
   return (result.data?.products ?? []).map(normalizeExistingProduct);
 }
 
-export interface DarazProductDetail extends DarazExistingProduct {
-  name: string;
-  description: string;
+export interface DarazSkuDetail {
+  SkuId: string;
+  SellerSku: string;
+  price: string;
+  quantity: string;
   images: string[];
+  saleProp: Record<string, string>;
+  specialPrice: string | null;
+  specialFromDate: string | null;
+  specialToDate: string | null;
+  packageWeightKg: number | null;
 }
 
-// Full item detail (images, description) for a single Daraz product - the
-// summary from getProducts() above doesn't carry enough to create a
-// reasonable Shopify product from. Same caveat: verify the exact response
-// shape against the live docs; falls back to empty strings/arrays rather
-// than throwing if fields are missing.
+export interface DarazVariationDef {
+  key: string; // e.g. "color_family" - matches the keys in each sku's saleProp
+  label: string; // e.g. "Color Family" - human-readable, shown as the Shopify option name
+}
+
+export interface DarazProductDetail {
+  item_id: string;
+  primary_category: string;
+  name: string;
+  description: string;
+  brand: string | null;
+  images: string[];
+  variations: DarazVariationDef[];
+  skus: DarazSkuDetail[];
+}
+
+// Confirmed against a real /product/item/get response (2026-08): images are
+// a plain top-level string array, price/special_price are separate fields
+// (special_price only actually applies within special_from_date/to_date),
+// and per-SKU option values live in `saleProp` (e.g. {color_family:
+// "Brown"}), with `variation.VariationN.name`/`label` giving the matching
+// human-readable option name for each saleProp key.
 export async function getProductDetail(
   { accessToken, country }: DarazProductClientOptions,
   itemId: string,
@@ -318,16 +342,26 @@ export async function getProductDetail(
     data: {
       item_id: unknown;
       primary_category: unknown;
-      description?: string;
+      images?: string[];
       attributes: {
         name?: string;
         description?: string;
-        long_description?: string;
         short_description?: string;
+        brand?: string;
       };
-      images?: string[];
-      Images?: string[];
-      skus: Array<{ SkuId: unknown; SellerSku: unknown; price: unknown; quantity: unknown; Images?: string[] }>;
+      variation?: Record<string, { name: string; label: string }>;
+      skus: Array<{
+        SkuId: unknown;
+        SellerSku: unknown;
+        price: unknown;
+        quantity: unknown;
+        Images?: string[];
+        saleProp?: Record<string, unknown>;
+        special_price?: unknown;
+        special_from_date?: string;
+        special_to_date?: string;
+        package_weight?: unknown;
+      }>;
     };
   }>({
     apiPath: "/product/item/get",
@@ -338,23 +372,58 @@ export async function getProductDetail(
   });
 
   const data = result.data;
-  const normalized = normalizeExistingProduct(data);
+
+  const variations = Object.values(data.variation ?? {}).map((v) => ({
+    key: v.name,
+    label: v.label,
+  }));
+
+  const skus: DarazSkuDetail[] = data.skus.map((sku) => {
+    const packageWeightKg = sku.package_weight !== undefined ? Number(sku.package_weight) : null;
+    return {
+      SkuId: String(sku.SkuId),
+      SellerSku: String(sku.SellerSku),
+      price: String(sku.price),
+      quantity: String(sku.quantity),
+      images: sku.Images ?? [],
+      saleProp: Object.fromEntries(
+        Object.entries(sku.saleProp ?? {}).map(([k, v]) => [k, String(v)]),
+      ),
+      specialPrice: sku.special_price !== undefined ? String(sku.special_price) : null,
+      specialFromDate: sku.special_from_date ?? null,
+      specialToDate: sku.special_to_date ?? null,
+      packageWeightKg: Number.isFinite(packageWeightKg) ? packageWeightKg : null,
+    };
+  });
+
   const images =
-    data.images ??
-    data.Images ??
-    data.skus.flatMap((sku) => sku.Images ?? []).filter((v, i, a) => a.indexOf(v) === i);
+    data.images ?? skus.flatMap((sku) => sku.images).filter((v, i, a) => a.indexOf(v) === i);
 
   return {
-    ...normalized,
-    name: data.attributes?.name ?? `Daraz item ${normalized.item_id}`,
-    description:
-      data.description ??
-      data.attributes?.description ??
-      data.attributes?.long_description ??
-      data.attributes?.short_description ??
-      "",
+    item_id: String(data.item_id),
+    primary_category: String(data.primary_category),
+    name: data.attributes?.name ?? `Daraz item ${data.item_id}`,
+    description: data.attributes?.description ?? data.attributes?.short_description ?? "",
+    brand: data.attributes?.brand && data.attributes.brand !== "No Brand" ? data.attributes.brand : null,
     images,
+    variations,
+    skus,
   };
+}
+
+// A sku's special_price only actually applies to purchases within its date
+// window - outside that window it's stale and the regular price should win.
+export function effectivePrice(sku: DarazSkuDetail): { price: string; compareAtPrice: string | null } {
+  if (!sku.specialPrice || !sku.specialFromDate || !sku.specialToDate) {
+    return { price: sku.price, compareAtPrice: null };
+  }
+  const now = Date.now();
+  const from = new Date(sku.specialFromDate).getTime();
+  const to = new Date(sku.specialToDate).getTime();
+  if (Number.isFinite(from) && Number.isFinite(to) && now >= from && now <= to) {
+    return { price: sku.specialPrice, compareAtPrice: sku.price };
+  }
+  return { price: sku.price, compareAtPrice: null };
 }
 
 // Debug-only: returns the untouched raw JSON for a product, bypassing all
