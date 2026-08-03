@@ -1,0 +1,191 @@
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
+import { useFetcher, useLoaderData } from "@remix-run/react";
+import {
+  Page,
+  Card,
+  IndexTable,
+  Badge,
+  Text,
+  Button,
+  EmptyState,
+  InlineStack,
+} from "@shopify/polaris";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
+import { useEffect } from "react";
+import { authenticate } from "../shopify.server";
+import db from "../db.server";
+import { syncProduct } from "../daraz/sync.server";
+
+const PRODUCTS_QUERY = `#graphql
+  query DarazProductsList {
+    products(first: 50, sortKey: UPDATED_AT, reverse: true) {
+      nodes {
+        id
+        title
+        featuredImage { url altText }
+      }
+    }
+  }
+`;
+
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { admin, session } = await authenticate.admin(request);
+
+  const darazAccount = await db.darazAccount.findUnique({
+    where: { shop: session.shop },
+  });
+  if (!darazAccount) {
+    return { connected: false as const, products: [] };
+  }
+
+  const response = await admin.graphql(PRODUCTS_QUERY);
+  const json = await response.json();
+  const shopifyProducts = (json.data?.products.nodes ?? []) as Array<{
+    id: string;
+    title: string;
+    featuredImage: { url: string; altText: string | null } | null;
+  }>;
+
+  const mappings = await db.productMapping.findMany({
+    where: { shop: session.shop },
+  });
+  const mappingByProductId = new Map(
+    mappings.map((m) => [m.shopifyProductId, m]),
+  );
+
+  const products = shopifyProducts.map((p) => {
+    const numericId = p.id.split("/").pop()!;
+    const mapping = mappingByProductId.get(numericId);
+    return {
+      id: numericId,
+      gid: p.id,
+      title: p.title,
+      imageUrl: p.featuredImage?.url ?? null,
+      syncStatus: mapping?.syncStatus ?? "unmapped",
+      darazItemId: mapping?.darazItemId ?? null,
+      lastError: mapping?.lastError ?? null,
+    };
+  });
+
+  return { connected: true as const, products };
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const formData = await request.formData();
+  const productId = String(formData.get("productId"));
+
+  try {
+    const mapping = await db.productMapping.findUnique({
+      where: {
+        shop_shopifyProductId: { shop: session.shop, shopifyProductId: productId },
+      },
+    });
+    await syncProduct(
+      session.shop,
+      productId,
+      mapping?.darazItemId ? "update" : "create",
+    );
+    return { productId, ok: true as const };
+  } catch (error) {
+    return {
+      productId,
+      ok: false as const,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
+
+const STATUS_TONE: Record<string, "success" | "attention" | "critical" | "info"> = {
+  synced: "success",
+  pending: "info",
+  unmapped: "attention",
+  error: "critical",
+};
+
+export default function DarazProducts() {
+  const data = useLoaderData<typeof loader>();
+  const fetcher = useFetcher<typeof action>();
+  const shopify = useAppBridge();
+
+  useEffect(() => {
+    if (!fetcher.data) return;
+    if (fetcher.data.ok) {
+      shopify.toast.show("Synced to Daraz");
+    } else {
+      shopify.toast.show(fetcher.data.error ?? "Sync failed", { isError: true });
+    }
+  }, [fetcher.data, shopify]);
+
+  if (!data.connected) {
+    return (
+      <Page>
+        <TitleBar title="Daraz products" />
+        <Card>
+          <EmptyState
+            heading="Connect Daraz first"
+            action={{ content: "Go to connection page", url: "/app/daraz" }}
+            image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+          >
+            <p>You need to connect a Daraz seller account before syncing products.</p>
+          </EmptyState>
+        </Card>
+      </Page>
+    );
+  }
+
+  const syncingProductId =
+    fetcher.state !== "idle" ? String(fetcher.formData?.get("productId")) : null;
+
+  return (
+    <Page>
+      <TitleBar title="Daraz products" />
+      <Card padding="0">
+        <IndexTable
+          resourceName={{ singular: "product", plural: "products" }}
+          itemCount={data.products.length}
+          headings={[
+            { title: "Product" },
+            { title: "Status" },
+            { title: "Daraz item" },
+            { title: "Actions" },
+          ]}
+          selectable={false}
+        >
+          {data.products.map((product, index) => (
+            <IndexTable.Row id={product.id} key={product.id} position={index}>
+              <IndexTable.Cell>
+                <Text as="span" variant="bodyMd" fontWeight="semibold">
+                  {product.title}
+                </Text>
+              </IndexTable.Cell>
+              <IndexTable.Cell>
+                <Badge tone={STATUS_TONE[product.syncStatus]}>
+                  {product.syncStatus}
+                </Badge>
+              </IndexTable.Cell>
+              <IndexTable.Cell>{product.darazItemId ?? "—"}</IndexTable.Cell>
+              <IndexTable.Cell>
+                <InlineStack gap="200">
+                  <Button url={`/app/daraz/products/${product.id}`}>
+                    {product.syncStatus === "unmapped" ? "Map category" : "Edit mapping"}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    disabled={product.syncStatus === "unmapped"}
+                    loading={syncingProductId === product.id}
+                    onClick={() =>
+                      fetcher.submit({ productId: product.id }, { method: "POST" })
+                    }
+                  >
+                    Sync now
+                  </Button>
+                </InlineStack>
+              </IndexTable.Cell>
+            </IndexTable.Row>
+          ))}
+        </IndexTable>
+      </Card>
+    </Page>
+  );
+}

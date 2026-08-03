@@ -1,0 +1,115 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
+// enough when changing adapters.
+// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Session {
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// One Daraz seller-center connection per Shopify shop.
+// Daraz operates separate API hosts per country ("site"); country is captured
+// at connect time so the API client can pick the right host per request.
+model DarazAccount {
+  id                    String    @id @default(cuid())
+  shop                  String    @unique
+  country               String
+  sellerId              String?
+  accessTokenEnc        String
+  refreshTokenEnc       String
+  tokenExpiresAt        DateTime
+  refreshTokenExpiresAt DateTime
+  connectedAt           DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  productMappings ProductMapping[]
+  syncJobs        SyncJob[]
+}
+
+enum SyncStatus {
+  unmapped
+  pending
+  synced
+  error
+}
+
+// Links a Shopify product to its Daraz counterpart, plus the category and
+// attribute values Daraz requires before it will accept the product.
+model ProductMapping {
+  id               String     @id @default(cuid())
+  shop             String
+  shopifyProductId String
+  darazItemId      String?
+  darazSkuId       String?
+  darazCategoryId  String?
+  attributesJson   String?
+  syncStatus       SyncStatus @default(unmapped)
+  lastSyncedAt     DateTime?
+  lastError        String?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  darazAccount DarazAccount @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@unique([shop, shopifyProductId])
+  @@index([shop, syncStatus])
+}
+
+enum SyncJobType {
+  create
+  update
+  price_qty
+}
+
+enum SyncJobStatus {
+  pending
+  processing
+  done
+  failed
+}
+
+// Queue table processed by the Vercel Cron worker (no persistent process /
+// Redis available on serverless) plus used for inline "Sync now" requests.
+model SyncJob {
+  id               String        @id @default(cuid())
+  shop             String
+  shopifyProductId String
+  type             SyncJobType
+  status           SyncJobStatus @default(pending)
+  attempts         Int           @default(0)
+  lastError        String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  darazAccount DarazAccount @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([shop, shopifyProductId])
+}
