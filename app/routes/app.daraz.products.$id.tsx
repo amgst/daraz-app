@@ -15,12 +15,19 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
-import { getCategoryAttributes } from "../daraz/client.server";
+import {
+  getCategoryAttributes,
+  getProducts,
+  type DarazExistingProduct,
+} from "../daraz/client.server";
 import { syncProduct, clearPendingSyncJobs } from "../daraz/sync.server";
 
 const PRODUCT_TITLE_QUERY = `#graphql
   query DarazMappingProductTitle($id: ID!) {
-    product(id: $id) { title }
+    product(id: $id) {
+      title
+      variants(first: 1) { nodes { sku } }
+    }
   }
 `;
 
@@ -33,6 +40,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   });
   const json = await response.json();
   const title = json.data?.product?.title ?? "Unknown product";
+  const defaultSku = json.data?.product?.variants?.nodes?.[0]?.sku ?? "";
 
   const mapping = await db.productMapping.findUnique({
     where: {
@@ -43,6 +51,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   return {
     productId,
     title,
+    defaultSku,
+    darazItemId: mapping?.darazItemId ?? null,
     categoryId: mapping?.darazCategoryId ?? "",
     attributes: mapping?.attributesJson
       ? (JSON.parse(mapping.attributesJson) as Record<string, string>)
@@ -83,6 +93,65 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const categoryId = String(formData.get("categoryId") ?? "");
     const suggestions = await suggestAttributeNames(session.shop, categoryId);
     return { intent: "loadAttributes" as const, suggestions };
+  }
+
+  if (intent === "searchDaraz") {
+    const query = String(formData.get("query") ?? "").trim();
+    if (!query) {
+      return { intent: "searchDaraz" as const, results: [] as DarazExistingProduct[], error: null };
+    }
+    try {
+      const darazSession = await getValidAccessToken(session.shop);
+      if (!darazSession) {
+        return {
+          intent: "searchDaraz" as const,
+          results: [] as DarazExistingProduct[],
+          error: "Not connected to Daraz",
+        };
+      }
+      const results = await getProducts(
+        { accessToken: darazSession.accessToken, country: darazSession.country },
+        { search: query },
+      );
+      return { intent: "searchDaraz" as const, results, error: null };
+    } catch (error) {
+      return {
+        intent: "searchDaraz" as const,
+        results: [] as DarazExistingProduct[],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  if (intent === "link") {
+    const itemId = String(formData.get("itemId") ?? "");
+    const linkCategoryId = String(formData.get("linkCategoryId") ?? "");
+    const skuId = String(formData.get("skuId") ?? "");
+
+    await db.productMapping.upsert({
+      where: {
+        shop_shopifyProductId: { shop: session.shop, shopifyProductId: productId },
+      },
+      create: {
+        shop: session.shop,
+        shopifyProductId: productId,
+        darazItemId: itemId,
+        darazSkuId: skuId || null,
+        darazCategoryId: linkCategoryId || null,
+        syncStatus: "synced",
+        lastSyncedAt: new Date(),
+      },
+      update: {
+        darazItemId: itemId,
+        darazSkuId: skuId || null,
+        darazCategoryId: linkCategoryId || null,
+        syncStatus: "synced",
+        lastSyncedAt: new Date(),
+        lastError: null,
+      },
+    });
+    await clearPendingSyncJobs(session.shop, productId);
+    return { intent: "link" as const, ok: true as const };
   }
 
   const categoryId = String(formData.get("categoryId") ?? "");
@@ -136,8 +205,10 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 export default function ProductMappingPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const linkFetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
 
+  const [query, setQuery] = useState(data.defaultSku);
   const [categoryId, setCategoryId] = useState(data.categoryId);
   const [pairs, setPairs] = useState<Array<{ key: string; value: string }>>(
     Object.entries(data.attributes).map(([key, value]) => ({ key, value })),
@@ -165,6 +236,16 @@ export default function ProductMappingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher.data]);
 
+  useEffect(() => {
+    if (!linkFetcher.data) return;
+    if (linkFetcher.data.intent === "searchDaraz" && linkFetcher.data.error) {
+      shopify.toast.show(linkFetcher.data.error, { isError: true });
+    }
+    if (linkFetcher.data.intent === "link" && linkFetcher.data.ok) {
+      shopify.toast.show("Linked to existing Daraz product");
+    }
+  }, [linkFetcher.data, shopify]);
+
   const addRow = () => setPairs((prev) => [...prev, { key: "", value: "" }]);
   const removeRow = (index: number) =>
     setPairs((prev) => prev.filter((_, i) => i !== index));
@@ -188,10 +269,94 @@ export default function ProductMappingPage() {
 
   const isBusy = fetcher.state !== "idle";
 
+  const searchResults =
+    linkFetcher.data?.intent === "searchDaraz" ? linkFetcher.data.results : [];
+  const isSearching =
+    linkFetcher.state !== "idle" && linkFetcher.formData?.get("intent") === "searchDaraz";
+  const linkingItemId =
+    linkFetcher.state !== "idle" && linkFetcher.formData?.get("intent") === "link"
+      ? String(linkFetcher.formData?.get("itemId"))
+      : null;
+
   return (
     <Page backAction={{ url: "/app/daraz/products" }}>
       <TitleBar title={`Map: ${data.title}`} />
-      <Card>
+      <BlockStack gap="400">
+        <Card>
+          <BlockStack gap="300">
+            <Text as="h2" variant="headingMd">
+              Link an existing Daraz product
+            </Text>
+            {data.darazItemId && (
+              <Text as="p" tone="subdued" variant="bodySm">
+                Currently linked to Daraz item {data.darazItemId}.
+              </Text>
+            )}
+            <Text as="p" tone="subdued" variant="bodySm">
+              Already have this product listed on Daraz? Search by SKU or
+              title and link it here instead of creating a duplicate.
+            </Text>
+            <InlineStack gap="200" blockAlign="end">
+              <div style={{ minWidth: 280 }}>
+                <TextField
+                  label="SKU or title"
+                  labelHidden
+                  placeholder="SKU or title"
+                  value={query}
+                  onChange={setQuery}
+                  autoComplete="off"
+                />
+              </div>
+              <Button
+                onClick={() =>
+                  linkFetcher.submit({ intent: "searchDaraz", query }, { method: "POST" })
+                }
+                loading={isSearching}
+                disabled={!query}
+              >
+                Search Daraz
+              </Button>
+            </InlineStack>
+            {searchResults.length > 0 && (
+              <BlockStack gap="200">
+                {searchResults.map((product) => (
+                  <InlineStack
+                    key={product.item_id}
+                    align="space-between"
+                    blockAlign="center"
+                  >
+                    <BlockStack gap="0">
+                      <Text as="span" variant="bodyMd" fontWeight="semibold">
+                        {product.attributes?.name ?? `Item ${product.item_id}`}
+                      </Text>
+                      <Text as="span" tone="subdued" variant="bodySm">
+                        Item {product.item_id} · {product.skus.length} SKU(s)
+                      </Text>
+                    </BlockStack>
+                    <Button
+                      loading={linkingItemId === product.item_id}
+                      onClick={() =>
+                        linkFetcher.submit(
+                          {
+                            intent: "link",
+                            itemId: product.item_id,
+                            linkCategoryId: product.primary_category,
+                            skuId: product.skus[0]?.SkuId ?? "",
+                          },
+                          { method: "POST" },
+                        )
+                      }
+                    >
+                      Link this product
+                    </Button>
+                  </InlineStack>
+                ))}
+              </BlockStack>
+            )}
+          </BlockStack>
+        </Card>
+
+        <Card>
         <BlockStack gap="400">
           <Text as="h2" variant="headingMd">
             Daraz category
@@ -266,7 +431,8 @@ export default function ProductMappingPage() {
             </Button>
           </InlineStack>
         </BlockStack>
-      </Card>
+        </Card>
+      </BlockStack>
     </Page>
   );
 }

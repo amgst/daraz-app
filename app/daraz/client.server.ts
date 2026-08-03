@@ -241,6 +241,39 @@ export async function updatePriceQuantity(
   });
 }
 
+export interface DarazExistingProduct {
+  item_id: string;
+  primary_category: string;
+  attributes: { name?: string };
+  skus: Array<{ SkuId: string; SellerSku: string; price: string; quantity: string }>;
+}
+
+// Searches the seller's existing Daraz catalog - used to link an already-listed
+// Daraz product to a Shopify product instead of creating a duplicate. Verify
+// the exact filter/response shape against the live docs before relying on it;
+// this follows the general IOP "/products/get" pagination pattern.
+export async function getProducts(
+  { accessToken, country }: DarazProductClientOptions,
+  filter: { sellerSku?: string; search?: string },
+): Promise<DarazExistingProduct[]> {
+  const result = await request<{
+    data: { products: DarazExistingProduct[] };
+  }>({
+    apiPath: "/products/get",
+    params: {
+      filter: "all",
+      limit: "20",
+      offset: "0",
+      ...(filter.sellerSku ? { sku_seller_list: JSON.stringify([filter.sellerSku]) } : {}),
+      ...(filter.search ? { search: filter.search } : {}),
+    },
+    accessToken,
+    apiHost: apiHostFor(country),
+    method: "GET",
+  });
+  return result.data?.products ?? [];
+}
+
 export async function getCategoryTree(
   { accessToken, country }: DarazProductClientOptions,
 ): Promise<unknown> {
