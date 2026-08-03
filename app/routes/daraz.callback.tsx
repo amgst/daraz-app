@@ -19,21 +19,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   const verified = verifyState(state);
-  if (!verified) {
+  if (!verified || !isDarazCountry(verified.country)) {
     throw new Response("Invalid or expired state", { status: 400 });
   }
-  const { shop } = verified;
+  const { shop, country } = verified;
 
-  const token = await exchangeCodeForToken(code);
-
-  const site = token.country_user_info?.[0];
-  const country = site?.country?.toUpperCase();
-  if (!country || !isDarazCountry(country)) {
-    throw new Response(
-      `Daraz account is not registered for a supported country/site (${country ?? "unknown"})`,
-      { status: 400 },
-    );
-  }
+  const token = await exchangeCodeForToken(code, country);
+  const site = token.country_user_info?.find(
+    (s) => s.country?.toUpperCase() === country,
+  );
 
   await db.darazAccount.upsert({
     where: { shop },

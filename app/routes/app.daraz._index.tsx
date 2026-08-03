@@ -53,14 +53,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { disconnected: true };
   }
 
-  const state = createState(session.shop);
-  return { authorizeUrl: getAuthorizeUrl(state) };
+  const country = String(formData.get("country") ?? "");
+  if (!isDarazCountry(country)) {
+    return { error: "Choose a valid Daraz country/site" };
+  }
+
+  const state = createState(session.shop, country);
+  return { authorizeUrl: getAuthorizeUrl(state, country) };
 };
 
 export default function DarazIndex() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
+  const [country, setCountry] = useState<string>(COUNTRY_OPTIONS[0].value);
 
   const isConnecting =
     fetcher.state !== "idle" && fetcher.formData?.get("intent") !== "disconnect";
@@ -75,9 +81,13 @@ export default function DarazIndex() {
     if (fetcher.data && "disconnected" in fetcher.data && fetcher.data.disconnected) {
       shopify.toast.show("Daraz account disconnected");
     }
+    if (fetcher.data && "error" in fetcher.data && fetcher.data.error) {
+      shopify.toast.show(fetcher.data.error, { isError: true });
+    }
   }, [fetcher.data, shopify]);
 
-  const connect = () => fetcher.submit({ intent: "connect" }, { method: "POST" });
+  const connect = () =>
+    fetcher.submit({ intent: "connect", country }, { method: "POST" });
   const disconnect = () =>
     fetcher.submit({ intent: "disconnect" }, { method: "POST" });
 
@@ -126,7 +136,15 @@ export default function DarazIndex() {
                       Connect your Daraz seller account to start syncing
                       products from this store.
                     </Text>
-                    <InlineStack>
+                    <InlineStack gap="300" blockAlign="end">
+                      <div style={{ minWidth: 220 }}>
+                        <Select
+                          label="Daraz country/site"
+                          options={COUNTRY_OPTIONS}
+                          value={country}
+                          onChange={setCountry}
+                        />
+                      </div>
                       <Button
                         variant="primary"
                         loading={isConnecting}
