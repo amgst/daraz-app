@@ -51,21 +51,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
   });
 
-  // Best-effort: an empty tree just means the picker falls back to manual
-  // category ID entry, it never blocks the page from loading.
-  let categoryTree: DarazCategoryNode[] = [];
-  try {
-    const darazSession = await getValidAccessToken(session.shop);
-    if (darazSession) {
-      categoryTree = await getCategoryTree({
-        accessToken: darazSession.accessToken,
-        country: darazSession.country,
-      });
-    }
-  } catch {
-    categoryTree = [];
-  }
-
   return {
     productId,
     title,
@@ -75,7 +60,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     attributes: mapping?.attributesJson
       ? (JSON.parse(mapping.attributesJson) as Record<string, string>)
       : {},
-    categoryTree,
   };
 };
 
@@ -112,6 +96,29 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
     const categoryId = String(formData.get("categoryId") ?? "");
     const suggestions = await suggestAttributeNames(session.shop, categoryId);
     return { intent: "loadAttributes" as const, suggestions };
+  }
+
+  // Fetched on demand (not in the loader) - Daraz's full nested category
+  // tree is large enough that fetching it eagerly on every page visit was
+  // slow enough to feel like the page just wasn't loading.
+  if (intent === "loadCategoryTree") {
+    try {
+      const darazSession = await getValidAccessToken(session.shop);
+      if (!darazSession) {
+        return { intent: "loadCategoryTree" as const, categoryTree: [] as DarazCategoryNode[], error: "Not connected to Daraz" };
+      }
+      const categoryTree = await getCategoryTree({
+        accessToken: darazSession.accessToken,
+        country: darazSession.country,
+      });
+      return { intent: "loadCategoryTree" as const, categoryTree, error: null };
+    } catch (error) {
+      return {
+        intent: "loadCategoryTree" as const,
+        categoryTree: [] as DarazCategoryNode[],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 
   if (intent === "searchDaraz") {
@@ -237,16 +244,30 @@ export default function ProductMappingPage() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const linkFetcher = useFetcher<typeof action>();
+  const categoryFetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
 
   const [query, setQuery] = useState(data.defaultSku);
   const [categoryId, setCategoryId] = useState(data.categoryId);
-  const [categoryPath, setCategoryPath] = useState<DarazCategoryNode[]>(
-    () => findCategoryPath(data.categoryTree, data.categoryId) ?? [],
-  );
+  const [categoryTree, setCategoryTree] = useState<DarazCategoryNode[]>([]);
+  const [categoryPath, setCategoryPath] = useState<DarazCategoryNode[]>([]);
+
+  useEffect(() => {
+    if (categoryFetcher.data?.intent !== "loadCategoryTree") return;
+    if (categoryFetcher.data.error) {
+      shopify.toast.show(categoryFetcher.data.error, { isError: true });
+    }
+    setCategoryTree(categoryFetcher.data.categoryTree);
+    setCategoryPath(findCategoryPath(categoryFetcher.data.categoryTree, categoryId) ?? []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryFetcher.data]);
+
+  const isLoadingCategories = categoryFetcher.state !== "idle";
+  const loadCategoryTree = () =>
+    categoryFetcher.submit({ intent: "loadCategoryTree" }, { method: "POST" });
 
   const selectCategoryAtLevel = (level: number, id: string) => {
-    const options = level === 0 ? data.categoryTree : categoryPath[level - 1].children;
+    const options = level === 0 ? categoryTree : categoryPath[level - 1].children;
     const node = options.find((n) => n.id === id);
     if (!node) return;
     const newPath = [...categoryPath.slice(0, level), node];
@@ -404,12 +425,21 @@ export default function ProductMappingPage() {
           <Text as="h2" variant="headingMd">
             Daraz category
           </Text>
-          {data.categoryTree.length > 0 ? (
+          {categoryTree.length === 0 ? (
+            <InlineStack gap="200" blockAlign="center">
+              <Button onClick={loadCategoryTree} loading={isLoadingCategories}>
+                Load Daraz categories
+              </Button>
+              <Text as="p" tone="subdued" variant="bodySm">
+                Fetches Daraz's category list so you can pick one instead of
+                typing an ID - can take a few seconds.
+              </Text>
+            </InlineStack>
+          ) : (
             <BlockStack gap="200">
-              {[
-                data.categoryTree,
-                ...categoryPath.map((n) => n.children),
-              ]
+              {(
+                [categoryTree, ...categoryPath.map((n) => n.children)] as DarazCategoryNode[][]
+              )
                 .filter((level) => level.length > 0)
                 .map((levelOptions, level) => (
                   <div key={level} style={{ maxWidth: 320 }}>
@@ -435,10 +465,6 @@ export default function ProductMappingPage() {
                 </Text>
               )}
             </BlockStack>
-          ) : (
-            <Text as="p" tone="subdued" variant="bodySm">
-              Couldn't load Daraz's category list - enter the category ID manually below.
-            </Text>
           )}
           <InlineStack gap="200" blockAlign="end">
             <div style={{ minWidth: 240 }}>
