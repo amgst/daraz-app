@@ -232,7 +232,25 @@ export async function clearPendingSyncJobs(
 const PRODUCT_CREATE_MUTATION = `#graphql
   mutation DarazImportProductCreate($product: ProductCreateInput!) {
     productCreate(product: $product) {
-      product { id }
+      product {
+        id
+        variants(first: 1) {
+          nodes { id inventoryItem { id } }
+        }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
+// productCreate always auto-creates one "Default Title" variant even with no
+// variant input - productVariantsBulkCreate-ing on top of that collides with
+// it ("The variant 'Default Title' already exists"). Update that existing
+// variant with the first Daraz SKU instead of creating a competing one.
+const VARIANTS_BULK_UPDATE_MUTATION = `#graphql
+  mutation DarazImportVariantsUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+    productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+      productVariants { id inventoryItem { id } }
       userErrors { field message }
     }
   }
@@ -306,25 +324,61 @@ export async function importDarazProduct(
   }
   const shopifyProductGid = createJson.data?.productCreate?.product?.id as string;
   const shopifyProductId = shopifyProductGid.split("/").pop()!;
+  const defaultVariant = createJson.data?.productCreate?.product?.variants?.nodes?.[0] as
+    | { id: string; inventoryItem: { id: string } }
+    | undefined;
 
-  const variantsResponse = await admin.graphql(VARIANTS_BULK_CREATE_MUTATION, {
-    variables: {
-      productId: shopifyProductGid,
-      variants: detail.skus.map((sku) => ({
-        price: sku.price,
-        inventoryItem: { sku: sku.SellerSku },
-      })),
-    },
-  });
-  const variantsJson = await variantsResponse.json();
-  const variantErrors = variantsJson.data?.productVariantsBulkCreate?.userErrors ?? [];
-  if (variantErrors.length > 0) {
-    throw new Error(
-      `Shopify variant creation failed: ${variantErrors.map((e: { message: string }) => e.message).join(", ")}`,
+  const allVariants: Array<{ id: string; inventoryItem: { id: string } }> = [];
+
+  if (detail.skus.length > 0 && defaultVariant) {
+    const [firstSku, ...restSkus] = detail.skus;
+
+    const updateResponse = await admin.graphql(VARIANTS_BULK_UPDATE_MUTATION, {
+      variables: {
+        productId: shopifyProductGid,
+        variants: [
+          {
+            id: defaultVariant.id,
+            price: firstSku.price,
+            inventoryItem: { sku: firstSku.SellerSku },
+          },
+        ],
+      },
+    });
+    const updateJson = await updateResponse.json();
+    const updateErrors = updateJson.data?.productVariantsBulkUpdate?.userErrors ?? [];
+    if (updateErrors.length > 0) {
+      throw new Error(
+        `Shopify variant update failed: ${updateErrors.map((e: { message: string }) => e.message).join(", ")}`,
+      );
+    }
+    allVariants.push(
+      ...((updateJson.data?.productVariantsBulkUpdate?.productVariants ?? []) as typeof allVariants),
     );
+
+    if (restSkus.length > 0) {
+      const createResponse = await admin.graphql(VARIANTS_BULK_CREATE_MUTATION, {
+        variables: {
+          productId: shopifyProductGid,
+          variants: restSkus.map((sku) => ({
+            price: sku.price,
+            inventoryItem: { sku: sku.SellerSku },
+          })),
+        },
+      });
+      const createVariantsJson = await createResponse.json();
+      const createVariantErrors = createVariantsJson.data?.productVariantsBulkCreate?.userErrors ?? [];
+      if (createVariantErrors.length > 0) {
+        throw new Error(
+          `Shopify variant creation failed: ${createVariantErrors.map((e: { message: string }) => e.message).join(", ")}`,
+        );
+      }
+      allVariants.push(
+        ...((createVariantsJson.data?.productVariantsBulkCreate?.productVariants ??
+          []) as typeof allVariants),
+      );
+    }
   }
-  const createdVariants = (variantsJson.data?.productVariantsBulkCreate?.productVariants ??
-    []) as Array<{ id: string; inventoryItem: { id: string } }>;
 
   if (detail.images.length > 0) {
     await admin.graphql(PRODUCT_CREATE_MEDIA_MUTATION, {
@@ -347,7 +401,7 @@ export async function importDarazProduct(
       variables: {
         input: {
           reason: "correction",
-          setQuantities: createdVariants.map((variant, index) => ({
+          setQuantities: allVariants.map((variant, index) => ({
             inventoryItemId: variant.inventoryItem.id,
             locationId,
             quantity: Number(detail.skus[index]?.quantity ?? 0),

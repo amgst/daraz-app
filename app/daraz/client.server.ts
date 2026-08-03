@@ -318,8 +318,15 @@ export async function getProductDetail(
     data: {
       item_id: unknown;
       primary_category: unknown;
-      attributes: { name?: string; description?: string; short_description?: string };
+      description?: string;
+      attributes: {
+        name?: string;
+        description?: string;
+        long_description?: string;
+        short_description?: string;
+      };
       images?: string[];
+      Images?: string[];
       skus: Array<{ SkuId: unknown; SellerSku: unknown; price: unknown; quantity: unknown; Images?: string[] }>;
     };
   }>({
@@ -333,12 +340,19 @@ export async function getProductDetail(
   const data = result.data;
   const normalized = normalizeExistingProduct(data);
   const images =
-    data.images ?? data.skus.flatMap((sku) => sku.Images ?? []).filter((v, i, a) => a.indexOf(v) === i);
+    data.images ??
+    data.Images ??
+    data.skus.flatMap((sku) => sku.Images ?? []).filter((v, i, a) => a.indexOf(v) === i);
 
   return {
     ...normalized,
     name: data.attributes?.name ?? `Daraz item ${normalized.item_id}`,
-    description: data.attributes?.description ?? data.attributes?.short_description ?? "",
+    description:
+      data.description ??
+      data.attributes?.description ??
+      data.attributes?.long_description ??
+      data.attributes?.short_description ??
+      "",
     images,
   };
 }
