@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData } from "@remix-run/react";
+import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -8,8 +8,8 @@ import {
   Button,
   EmptyState,
   InlineStack,
-  BlockStack,
-  Divider,
+  ResourceList,
+  ResourceItem,
   Thumbnail,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
@@ -125,6 +125,7 @@ export default function DarazProducts() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (!fetcher.data) return;
@@ -187,54 +188,54 @@ export default function DarazProducts() {
         </div>
       )}
       <Card padding="0">
-        <BlockStack gap="0">
-          {data.products.map((product, index) => (
-            <div key={product.id}>
-              {index > 0 && <Divider />}
-              <div style={{ padding: "1rem" }}>
-                <InlineStack align="space-between" blockAlign="center" wrap>
-                  <InlineStack gap="300" blockAlign="center">
-                    <Thumbnail
-                      source={product.imageUrl ?? ""}
-                      alt={product.title}
-                      size="small"
-                    />
-                    <BlockStack gap="100">
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {product.title}
-                      </Text>
-                      <InlineStack gap="200" blockAlign="center">
-                        <Badge tone={STATUS_TONE[product.syncStatus]}>
-                          {product.syncStatus}
-                        </Badge>
-                        {product.darazItemId && (
-                          <Text as="span" tone="subdued" variant="bodySm">
-                            Daraz item {product.darazItemId}
-                          </Text>
-                        )}
-                      </InlineStack>
-                    </BlockStack>
-                  </InlineStack>
-                  <InlineStack gap="200">
-                    <Button url={`/app/daraz/products/${product.id}`}>
-                      {product.syncStatus === "unmapped" ? "Map category" : "Edit mapping"}
-                    </Button>
-                    <Button
-                      variant="primary"
-                      disabled={product.syncStatus === "unmapped"}
-                      loading={syncingProductId === product.id}
-                      onClick={() =>
-                        fetcher.submit({ productId: product.id }, { method: "POST" })
-                      }
-                    >
-                      Sync now
-                    </Button>
-                  </InlineStack>
+        <ResourceList
+          resourceName={{ singular: "product", plural: "products" }}
+          items={data.products}
+          renderItem={(product) => {
+            const isSyncingThis = syncingProductId === product.id;
+            return (
+              <ResourceItem
+                id={product.id}
+                onClick={() => navigate(`/app/daraz/products/${product.id}`)}
+                media={
+                  <Thumbnail
+                    source={product.imageUrl || ""}
+                    alt={product.title}
+                    size="small"
+                  />
+                }
+                accessibilityLabel={`Map or sync ${product.title}`}
+                shortcutActions={[
+                  {
+                    content:
+                      product.syncStatus === "unmapped" ? "Map category" : "Edit mapping",
+                    onAction: () => navigate(`/app/daraz/products/${product.id}`),
+                  },
+                  {
+                    content: isSyncingThis ? "Syncing..." : "Sync now",
+                    disabled: product.syncStatus === "unmapped" || isSyncingThis,
+                    onAction: () =>
+                      fetcher.submit({ productId: product.id }, { method: "POST" }),
+                  },
+                ]}
+              >
+                <InlineStack gap="200" blockAlign="center">
+                  <Text as="span" variant="bodyMd" fontWeight="semibold">
+                    {product.title}
+                  </Text>
+                  <Badge tone={STATUS_TONE[product.syncStatus]}>
+                    {product.syncStatus}
+                  </Badge>
+                  {product.darazItemId && (
+                    <Text as="span" tone="subdued" variant="bodySm">
+                      Daraz item {product.darazItemId}
+                    </Text>
+                  )}
                 </InlineStack>
-              </div>
-            </div>
-          ))}
-        </BlockStack>
+              </ResourceItem>
+            );
+          }}
+        />
       </Card>
     </Page>
   );
