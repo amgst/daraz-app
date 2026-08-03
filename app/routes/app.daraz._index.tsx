@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
@@ -11,6 +11,7 @@ import {
   InlineStack,
   Badge,
   Link,
+  Select,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
@@ -18,6 +19,11 @@ import db from "../db.server";
 import { createState } from "../daraz/state.server";
 import { getAuthorizeUrl } from "../daraz/client.server";
 import { DARAZ_SITES, isDarazCountry } from "../daraz/config.server";
+
+const COUNTRY_OPTIONS = Object.entries(DARAZ_SITES).map(([value, site]) => ({
+  label: site.label,
+  value,
+}));
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);

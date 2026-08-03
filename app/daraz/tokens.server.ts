@@ -33,7 +33,7 @@ export async function getValidAccessToken(
   }
 
   const refreshToken = decrypt(account.refreshTokenEnc);
-  const refreshed = await refreshAccessToken(refreshToken);
+  const refreshed = await refreshAccessToken(refreshToken, account.country);
 
   await db.darazAccount.update({
     where: { shop },

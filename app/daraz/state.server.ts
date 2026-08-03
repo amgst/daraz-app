@@ -2,8 +2,10 @@ import crypto from "node:crypto";
 
 // Signed, stateless CSRF token for the Daraz OAuth redirect. Daraz calls the
 // callback URL as a plain top-level browser navigation (no Shopify session
-// token available), so the target shop has to travel in `state` itself -
-// this HMAC lets the callback trust it without a server-side lookup.
+// token available), so the target shop AND the chosen country/site have to
+// travel in `state` itself - this HMAC lets the callback trust both without
+// a server-side lookup (country is needed before token exchange, since each
+// Daraz site has its own API host).
 function getSecret(): string {
   const secret = process.env.SHOPIFY_API_SECRET;
   if (!secret) {
@@ -12,9 +14,9 @@ function getSecret(): string {
   return secret;
 }
 
-export function createState(shop: string): string {
+export function createState(shop: string, country: string): string {
   const nonce = crypto.randomBytes(8).toString("hex");
-  const payload = `${shop}:${nonce}:${Date.now()}`;
+  const payload = `${shop}:${country}:${nonce}:${Date.now()}`;
   const signature = crypto
     .createHmac("sha256", getSecret())
     .update(payload)
@@ -24,7 +26,9 @@ export function createState(shop: string): string {
 
 const MAX_STATE_AGE_MS = 10 * 60 * 1000; // 10 minutes to complete the OAuth redirect
 
-export function verifyState(state: string): { shop: string } | null {
+export function verifyState(
+  state: string,
+): { shop: string; country: string } | null {
   let decoded: string;
   try {
     decoded = Buffer.from(state, "base64url").toString("utf8");
@@ -32,9 +36,9 @@ export function verifyState(state: string): { shop: string } | null {
     return null;
   }
   const parts = decoded.split(":");
-  if (parts.length !== 4) return null;
-  const [shop, nonce, timestampStr, signature] = parts;
-  const payload = `${shop}:${nonce}:${timestampStr}`;
+  if (parts.length !== 5) return null;
+  const [shop, country, nonce, timestampStr, signature] = parts;
+  const payload = `${shop}:${country}:${nonce}:${timestampStr}`;
   const expected = crypto
     .createHmac("sha256", getSecret())
     .update(payload)
@@ -49,5 +53,5 @@ export function verifyState(state: string): { shop: string } | null {
     return null;
   }
 
-  return { shop };
+  return { shop, country };
 }

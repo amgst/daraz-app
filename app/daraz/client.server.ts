@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import {
   apiHostFor,
-  DARAZ_AUTH_HOST,
+  oauthHostFor,
   getDarazAppCredentials,
   getDarazRedirectUri,
 } from "./config.server";
@@ -96,10 +96,13 @@ async function request<T = unknown>({
 }
 
 // ---- OAuth ----
+// The authorize page and token endpoints live on the seller's own country
+// host (e.g. https://api.daraz.pk), not a separate global auth host - so the
+// country has to be chosen by the merchant before we can build this URL.
 
-export function getAuthorizeUrl(state: string): string {
+export function getAuthorizeUrl(state: string, country: string): string {
   const { appKey } = getDarazAppCredentials();
-  const url = new URL("/oauth/authorize", DARAZ_AUTH_HOST);
+  const url = new URL("/oauth/authorize", oauthHostFor(country));
   url.searchParams.set("response_type", "code");
   url.searchParams.set("force_auth", "true");
   url.searchParams.set("client_id", appKey);
@@ -122,26 +125,25 @@ export interface DarazTokenResponse {
   }>;
 }
 
-// Global auth host handles token issuance regardless of eventual site/country.
-const AUTH_API_HOST = "https://api.daraz.com/rest";
-
 export async function exchangeCodeForToken(
   code: string,
+  country: string,
 ): Promise<DarazTokenResponse> {
   return request<DarazTokenResponse>({
     apiPath: "/auth/token/create",
     params: { code },
-    apiHost: AUTH_API_HOST,
+    apiHost: apiHostFor(country),
   });
 }
 
 export async function refreshAccessToken(
   refreshToken: string,
+  country: string,
 ): Promise<DarazTokenResponse> {
   return request<DarazTokenResponse>({
     apiPath: "/auth/token/refresh",
     params: { refresh_token: refreshToken },
-    apiHost: AUTH_API_HOST,
+    apiHost: apiHostFor(country),
   });
 }
 
