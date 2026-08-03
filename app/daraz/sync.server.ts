@@ -421,18 +421,28 @@ export async function importDarazProduct(
     }
   }
 
-  const publicationsResponse = await admin.graphql(ONLINE_STORE_PUBLICATION_QUERY);
-  const publicationsJson = await publicationsResponse.json();
-  const onlineStorePublicationId = (
-    publicationsJson.data?.publications?.nodes as Array<{ id: string; name: string }> | undefined
-  )?.find((p) => p.name === "Online Store")?.id;
-  if (onlineStorePublicationId) {
-    await admin.graphql(PUBLISH_MUTATION, {
-      variables: {
-        id: shopifyProductGid,
-        input: [{ publicationId: onlineStorePublicationId }],
-      },
-    });
+  // Requires the read_publications/write_publications scopes, which this app
+  // doesn't have yet (needs a shopify.app.toml scope update + merchant
+  // re-consent to add). Never let a missing-scope error here kill an
+  // otherwise-successful import - the product/variants/images/inventory are
+  // already done and worth keeping; publishing can be added later or done
+  // manually in the admin in the meantime.
+  try {
+    const publicationsResponse = await admin.graphql(ONLINE_STORE_PUBLICATION_QUERY);
+    const publicationsJson = await publicationsResponse.json();
+    const onlineStorePublicationId = (
+      publicationsJson.data?.publications?.nodes as Array<{ id: string; name: string }> | undefined
+    )?.find((p) => p.name === "Online Store")?.id;
+    if (onlineStorePublicationId) {
+      await admin.graphql(PUBLISH_MUTATION, {
+        variables: {
+          id: shopifyProductGid,
+          input: [{ publicationId: onlineStorePublicationId }],
+        },
+      });
+    }
+  } catch (error) {
+    console.error(`Daraz import: publish-to-Online-Store skipped for ${shopifyProductId}:`, error);
   }
 
   const locationResponse = await admin.graphql(PRIMARY_LOCATION_QUERY);
