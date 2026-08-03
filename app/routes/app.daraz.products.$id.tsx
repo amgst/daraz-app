@@ -16,7 +16,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
 import { getCategoryAttributes } from "../daraz/client.server";
-import { syncProduct } from "../daraz/sync.server";
+import { syncProduct, clearPendingSyncJobs } from "../daraz/sync.server";
 
 const PRODUCT_TITLE_QUERY = `#graphql
   query DarazMappingProductTitle($id: ID!) {
@@ -119,6 +119,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         productId,
         existing?.darazItemId ? "update" : "create",
       );
+      await clearPendingSyncJobs(session.shop, productId);
       return { intent: "save" as const, ok: true as const };
     } catch (error) {
       return {

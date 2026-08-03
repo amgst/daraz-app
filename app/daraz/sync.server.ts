@@ -168,8 +168,7 @@ export async function syncProduct(
   }
 }
 
-// Drains one pending SyncJob, marking it processing -> done/failed. Used by
-// the Vercel Cron worker route.
+// Drains one pending SyncJob, marking it processing -> done/failed.
 export async function processSyncJob(job: SyncJob): Promise<void> {
   await db.syncJob.update({
     where: { id: job.id },
@@ -198,4 +197,33 @@ export async function processSyncJob(job: SyncJob): Promise<void> {
       },
     });
   }
+}
+
+// No Vercel Cron (Hobby plan caps scheduled Cron Jobs to once/day) - webhooks
+// enqueue SyncJob rows purely as a "needs sync" signal, and the merchant
+// drains them on demand from the products page ("Sync all pending" button).
+const DRAIN_BATCH_SIZE = 20;
+
+export async function drainPendingSyncJobs(shop: string): Promise<number> {
+  const jobs = await db.syncJob.findMany({
+    where: { shop, status: "pending" },
+    orderBy: { createdAt: "asc" },
+    take: DRAIN_BATCH_SIZE,
+  });
+  for (const job of jobs) {
+    await processSyncJob(job);
+  }
+  return jobs.length;
+}
+
+// Keeps a product's "pending" queue indicator from going stale when it was
+// synced directly (the per-product "Sync now" button) rather than drained.
+export async function clearPendingSyncJobs(
+  shop: string,
+  shopifyProductId: string,
+): Promise<void> {
+  await db.syncJob.updateMany({
+    where: { shop, shopifyProductId, status: "pending" },
+    data: { status: "done" },
+  });
 }

@@ -14,7 +14,11 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { useEffect } from "react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { syncProduct } from "../daraz/sync.server";
+import {
+  syncProduct,
+  clearPendingSyncJobs,
+  drainPendingSyncJobs,
+} from "../daraz/sync.server";
 
 const PRODUCTS_QUERY = `#graphql
   query DarazProductsList {
@@ -67,12 +71,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
-  return { connected: true as const, products };
+  const pendingCount = await db.syncJob.count({
+    where: { shop: session.shop, status: "pending" },
+  });
+
+  return { connected: true as const, products, pendingCount };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
+
+  if (formData.get("intent") === "syncAll") {
+    const processed = await drainPendingSyncJobs(session.shop);
+    return { intent: "syncAll" as const, processed };
+  }
+
   const productId = String(formData.get("productId"));
 
   try {
@@ -86,9 +100,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       productId,
       mapping?.darazItemId ? "update" : "create",
     );
-    return { productId, ok: true as const };
+    await clearPendingSyncJobs(session.shop, productId);
+    return { intent: "single" as const, productId, ok: true as const };
   } catch (error) {
     return {
+      intent: "single" as const,
       productId,
       ok: false as const,
       error: error instanceof Error ? error.message : String(error),
@@ -110,7 +126,9 @@ export default function DarazProducts() {
 
   useEffect(() => {
     if (!fetcher.data) return;
-    if (fetcher.data.ok) {
+    if (fetcher.data.intent === "syncAll") {
+      shopify.toast.show(`Synced ${fetcher.data.processed} pending product(s)`);
+    } else if (fetcher.data.ok) {
       shopify.toast.show("Synced to Daraz");
     } else {
       shopify.toast.show(fetcher.data.error ?? "Sync failed", { isError: true });
@@ -134,12 +152,38 @@ export default function DarazProducts() {
     );
   }
 
+  const isSyncingAll =
+    fetcher.state !== "idle" && fetcher.formData?.get("intent") === "syncAll";
   const syncingProductId =
-    fetcher.state !== "idle" ? String(fetcher.formData?.get("productId")) : null;
+    fetcher.state !== "idle" && fetcher.formData?.get("intent") !== "syncAll"
+      ? String(fetcher.formData?.get("productId"))
+      : null;
 
   return (
     <Page>
       <TitleBar title="Daraz products" />
+      {data.pendingCount > 0 && (
+        <div style={{ marginBottom: "1rem" }}>
+          <Card>
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="p" variant="bodyMd">
+                {data.pendingCount} product(s) have changes waiting to sync.
+                There's no automatic background sync on this plan - drain them
+                on demand, or sync individual products below.
+              </Text>
+              <Button
+                variant="primary"
+                loading={isSyncingAll}
+                onClick={() =>
+                  fetcher.submit({ intent: "syncAll" }, { method: "POST" })
+                }
+              >
+                Sync all pending
+              </Button>
+            </InlineStack>
+          </Card>
+        </div>
+      )}
       <Card padding="0">
         <IndexTable
           resourceName={{ singular: "product", plural: "products" }}
