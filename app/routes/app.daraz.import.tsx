@@ -98,8 +98,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const itemId = String(formData.get("itemId") ?? "");
 
   try {
-    const shopifyProductId = await importDarazProduct(session.shop, itemId);
-    return { intent: "import" as const, itemId, ok: true as const, shopifyProductId };
+    const { shopifyProductId, warnings } = await importDarazProduct(session.shop, itemId);
+    return { intent: "import" as const, itemId, ok: true as const, shopifyProductId, warnings };
   } catch (error) {
     return {
       intent: "import" as const,
@@ -121,6 +121,9 @@ export default function ImportFromDaraz() {
     if (!fetcher.data || fetcher.data.intent !== "import") return;
     if (fetcher.data.ok) {
       shopify.toast.show("Imported to Shopify");
+      if (fetcher.data.warnings.length > 0) {
+        shopify.toast.show(fetcher.data.warnings.join(" · "), { isError: true, duration: 8000 });
+      }
     } else {
       shopify.toast.show(fetcher.data.error ?? "Import failed", { isError: true });
     }

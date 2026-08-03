@@ -277,6 +277,7 @@ const VARIANTS_BULK_CREATE_MUTATION = `#graphql
 const PRODUCT_CREATE_MEDIA_MUTATION = `#graphql
   mutation DarazImportProductMedia($productId: ID!, $media: [CreateMediaInput!]!) {
     productCreateMedia(productId: $productId, media: $media) {
+      media { id status }
       mediaUserErrors { field message }
     }
   }
@@ -315,13 +316,19 @@ const SET_INVENTORY_MUTATION = `#graphql
   }
 `;
 
+export interface ImportResult {
+  shopifyProductId: string;
+  warnings: string[];
+}
+
 // Creates a brand-new Shopify product from a Daraz listing that has no
 // Shopify counterpart yet (the reverse of syncProduct, which goes
 // Shopify -> Daraz). Used by the "Import from Daraz" page.
 export async function importDarazProduct(
   shop: string,
   darazItemId: string,
-): Promise<string> {
+): Promise<ImportResult> {
+  const warnings: string[] = [];
   const darazSession = await getValidAccessToken(shop);
   if (!darazSession) {
     throw new Error(`Shop ${shop} has no connected Daraz account`);
@@ -487,14 +494,27 @@ export async function importDarazProduct(
     });
     const mediaJson = await mediaResponse.json();
     const mediaErrors = mediaJson.data?.productCreateMedia?.mediaUserErrors ?? [];
+    const mediaNodes = (mediaJson.data?.productCreateMedia?.media ?? []) as Array<{
+      id: string;
+      status: string;
+    }>;
+    const failedMedia = mediaNodes.filter((m) => m.status === "FAILED");
+    // Don't fail the whole import over images - the product/variants are
+    // already created and worth keeping either way - but don't hide it
+    // either (previously this only went to console.error, which the
+    // merchant never sees).
     if (mediaErrors.length > 0) {
-      // Don't fail the whole import over images - the product/variants are
-      // already created and worth keeping either way.
-      console.error(
-        `Daraz import: productCreateMedia errors for ${shopifyProductId}:`,
-        mediaErrors,
+      warnings.push(
+        `Images: ${mediaErrors.map((e: { message: string }) => e.message).join(", ")}`,
       );
     }
+    if (failedMedia.length > 0) {
+      warnings.push(
+        `Images: Shopify couldn't fetch ${failedMedia.length} of ${detail.images.length} image URL(s) from Daraz (possibly blocked by Daraz's CDN)`,
+      );
+    }
+  } else {
+    warnings.push("Daraz returned no images for this product");
   }
 
   // Requires the read_publications/write_publications scopes, which this app
@@ -561,5 +581,5 @@ export async function importDarazProduct(
     },
   });
 
-  return shopifyProductId;
+  return { shopifyProductId, warnings };
 }
