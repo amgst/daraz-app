@@ -4,7 +4,7 @@ import db from "../db.server";
 import { verifyState } from "../daraz/state.server";
 import { exchangeCodeForToken } from "../daraz/client.server";
 import { encrypt } from "../daraz/crypto.server";
-import { isDarazCountry } from "../daraz/config.server";
+import { isDarazCountry } from "../daraz/countries";
 
 // Public route - Daraz hits this as a plain top-level browser redirect after
 // the seller authorizes, with no Shopify session available. `state` (signed,

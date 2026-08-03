@@ -18,7 +18,7 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { createState } from "../daraz/state.server";
 import { getAuthorizeUrl } from "../daraz/client.server";
-import { DARAZ_SITES, isDarazCountry } from "../daraz/config.server";
+import { DARAZ_SITES, isDarazCountry } from "../daraz/countries";
 
 const COUNTRY_OPTIONS = Object.entries(DARAZ_SITES).map(([value, site]) => ({
   label: site.label,

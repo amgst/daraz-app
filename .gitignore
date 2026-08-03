@@ -4,6 +4,7 @@ node_modules
 /.cache
 /build
 /app/build
+/.vercel
 /public/build/
 /public/_dev
 /app/public/build

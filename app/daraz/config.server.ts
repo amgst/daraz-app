@@ -5,19 +5,7 @@
 // country isn't known until after OAuth completes, the merchant picks it
 // upfront on the connect page and it travels through the signed `state`
 // param so the callback knows which host to exchange the code against.
-export const DARAZ_SITES = {
-  PK: { label: "Pakistan", host: "https://api.daraz.pk" },
-  BD: { label: "Bangladesh", host: "https://api.daraz.com.bd" },
-  LK: { label: "Sri Lanka", host: "https://api.daraz.lk" },
-  NP: { label: "Nepal", host: "https://api.daraz.com.np" },
-  MM: { label: "Myanmar", host: "https://api.shop.com.mm" },
-} as const;
-
-export type DarazCountry = keyof typeof DARAZ_SITES;
-
-export function isDarazCountry(value: string): value is DarazCountry {
-  return value in DARAZ_SITES;
-}
+import { DARAZ_SITES, isDarazCountry } from "./countries";
 
 function hostFor(country: string): string {
   if (!isDarazCountry(country)) {
