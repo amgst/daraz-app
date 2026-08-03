@@ -253,12 +253,36 @@ export interface DarazExistingProduct {
 // browse the catalog for import. Verify the exact filter/response shape
 // against the live docs before relying on it; this follows the general
 // IOP "/products/get" pagination pattern.
+// Daraz returns item_id/primary_category/SkuId as raw JSON numbers, not
+// strings, despite the rest of this client treating them as strings (learned
+// the hard way: a bare `primary_category` blew up a Shopify GraphQL call
+// expecting a String). Coerce everything ID-shaped right at the parse
+// boundary so no downstream caller has to think about it.
+function normalizeExistingProduct(raw: {
+  item_id: unknown;
+  primary_category: unknown;
+  attributes: { name?: string };
+  skus: Array<{ SkuId: unknown; SellerSku: unknown; price: unknown; quantity: unknown }>;
+}): DarazExistingProduct {
+  return {
+    item_id: String(raw.item_id),
+    primary_category: String(raw.primary_category),
+    attributes: raw.attributes,
+    skus: raw.skus.map((sku) => ({
+      SkuId: String(sku.SkuId),
+      SellerSku: String(sku.SellerSku),
+      price: String(sku.price),
+      quantity: String(sku.quantity),
+    })),
+  };
+}
+
 export async function getProducts(
   { accessToken, country }: DarazProductClientOptions,
   filter: { sellerSku?: string; search?: string; limit?: number; offset?: number },
 ): Promise<DarazExistingProduct[]> {
   const result = await request<{
-    data: { products: DarazExistingProduct[] };
+    data: { products: Parameters<typeof normalizeExistingProduct>[0][] };
   }>({
     apiPath: "/products/get",
     params: {
@@ -272,7 +296,7 @@ export async function getProducts(
     apiHost: apiHostFor(country),
     method: "GET",
   });
-  return result.data?.products ?? [];
+  return (result.data?.products ?? []).map(normalizeExistingProduct);
 }
 
 export interface DarazProductDetail extends DarazExistingProduct {
@@ -292,11 +316,11 @@ export async function getProductDetail(
 ): Promise<DarazProductDetail> {
   const result = await request<{
     data: {
-      item_id: string;
-      primary_category: string;
+      item_id: unknown;
+      primary_category: unknown;
       attributes: { name?: string; description?: string; short_description?: string };
       images?: string[];
-      skus: Array<{ SkuId: string; SellerSku: string; price: string; quantity: string; Images?: string[] }>;
+      skus: Array<{ SkuId: unknown; SellerSku: unknown; price: unknown; quantity: unknown; Images?: string[] }>;
     };
   }>({
     apiPath: "/product/item/get",
@@ -307,15 +331,13 @@ export async function getProductDetail(
   });
 
   const data = result.data;
+  const normalized = normalizeExistingProduct(data);
   const images =
     data.images ?? data.skus.flatMap((sku) => sku.Images ?? []).filter((v, i, a) => a.indexOf(v) === i);
 
   return {
-    item_id: data.item_id,
-    primary_category: data.primary_category,
-    attributes: data.attributes,
-    skus: data.skus,
-    name: data.attributes?.name ?? `Daraz item ${data.item_id}`,
+    ...normalized,
+    name: data.attributes?.name ?? `Daraz item ${normalized.item_id}`,
     description: data.attributes?.description ?? data.attributes?.short_description ?? "",
     images,
   };
