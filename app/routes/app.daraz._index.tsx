@@ -17,7 +17,8 @@ import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { createState } from "../daraz/state.server";
-import { getAuthorizeUrl } from "../daraz/client.server";
+import { getAuthorizeUrl, getCategoryTree } from "../daraz/client.server";
+import { getValidAccessToken } from "../daraz/tokens.server";
 import { DARAZ_SITES, isDarazCountry } from "../daraz/countries";
 
 const COUNTRY_OPTIONS = Object.entries(DARAZ_SITES).map(([value, site]) => ({
@@ -53,6 +54,36 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { disconnected: true };
   }
 
+  if (intent === "testConnection") {
+    try {
+      const darazSession = await getValidAccessToken(session.shop);
+      if (!darazSession) {
+        return { testResult: { ok: false as const, message: "Not connected to Daraz" } };
+      }
+      const result = (await getCategoryTree({
+        accessToken: darazSession.accessToken,
+        country: darazSession.country,
+      })) as { data?: unknown };
+      const categoryCount = Array.isArray(result.data) ? result.data.length : null;
+      return {
+        testResult: {
+          ok: true as const,
+          message:
+            categoryCount !== null
+              ? `Connected - fetched ${categoryCount} top-level categories from Daraz`
+              : "Connected - Daraz API call succeeded",
+        },
+      };
+    } catch (error) {
+      return {
+        testResult: {
+          ok: false as const,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      };
+    }
+  }
+
   const country = String(formData.get("country") ?? "");
   if (!isDarazCountry(country)) {
     return { error: "Choose a valid Daraz country/site" };
@@ -69,9 +100,13 @@ export default function DarazIndex() {
   const [country, setCountry] = useState<string>(COUNTRY_OPTIONS[0].value);
 
   const isConnecting =
-    fetcher.state !== "idle" && fetcher.formData?.get("intent") !== "disconnect";
+    fetcher.state !== "idle" &&
+    fetcher.formData?.get("intent") !== "disconnect" &&
+    fetcher.formData?.get("intent") !== "testConnection";
   const isDisconnecting =
     fetcher.state !== "idle" && fetcher.formData?.get("intent") === "disconnect";
+  const isTesting =
+    fetcher.state !== "idle" && fetcher.formData?.get("intent") === "testConnection";
 
   useEffect(() => {
     if (fetcher.data && "authorizeUrl" in fetcher.data && fetcher.data.authorizeUrl) {
@@ -90,6 +125,11 @@ export default function DarazIndex() {
     fetcher.submit({ intent: "connect", country }, { method: "POST" });
   const disconnect = () =>
     fetcher.submit({ intent: "disconnect" }, { method: "POST" });
+  const testConnection = () =>
+    fetcher.submit({ intent: "testConnection" }, { method: "POST" });
+
+  const testResult =
+    fetcher.data && "testResult" in fetcher.data ? fetcher.data.testResult : null;
 
   return (
     <Page>
@@ -121,6 +161,9 @@ export default function DarazIndex() {
                       >
                         Go to products
                       </Button>
+                      <Button loading={isTesting} onClick={testConnection}>
+                        Test connection
+                      </Button>
                       <Button
                         tone="critical"
                         loading={isDisconnecting}
@@ -129,6 +172,15 @@ export default function DarazIndex() {
                         Disconnect
                       </Button>
                     </InlineStack>
+                    {testResult && (
+                      <Text
+                        as="p"
+                        variant="bodySm"
+                        tone={testResult.ok ? "success" : "critical"}
+                      >
+                        {testResult.message}
+                      </Text>
+                    )}
                   </>
                 ) : (
                   <>
