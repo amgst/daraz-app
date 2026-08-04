@@ -17,7 +17,17 @@ export async function importDarazOrders(
     country: darazSession.country,
   };
 
-  const orders = await getOrders(darazOpts);
+  // /orders/get is capped at 100 per page, so page through everything -
+  // otherwise only the newest ~100 orders ever get imported and anything
+  // older silently never shows up.
+  const PAGE_SIZE = 100;
+  const MAX_PAGES = 200; // safety cap (~20k orders) against a runaway loop
+  const orders: Awaited<ReturnType<typeof getOrders>> = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const batch = await getOrders(darazOpts, { offset: page * PAGE_SIZE, limit: PAGE_SIZE });
+    orders.push(...batch);
+    if (batch.length < PAGE_SIZE) break;
+  }
 
   let imported = 0;
   let updated = 0;

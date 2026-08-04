@@ -20,6 +20,7 @@ import {
   syncProduct,
   clearPendingSyncJobs,
   drainPendingSyncJobs,
+  pullPriceStockFromDaraz,
 } from "../daraz/sync.server";
 
 const PRODUCTS_QUERY = `#graphql
@@ -89,6 +90,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { intent: "syncAll" as const, processed };
   }
 
+  if (formData.get("intent") === "pullFromDaraz") {
+    const result = await pullPriceStockFromDaraz(session.shop);
+    return { intent: "pullFromDaraz" as const, ...result };
+  }
+
   const productId = String(formData.get("productId"));
 
   try {
@@ -131,6 +137,12 @@ export default function DarazProducts() {
     if (!fetcher.data) return;
     if (fetcher.data.intent === "syncAll") {
       shopify.toast.show(`Synced ${fetcher.data.processed} pending product(s)`);
+    } else if (fetcher.data.intent === "pullFromDaraz") {
+      const { productsChecked, productsUpdated, errors } = fetcher.data;
+      shopify.toast.show(
+        `Checked ${productsChecked} product(s) on Daraz, updated ${productsUpdated} with new price/stock`,
+        { isError: errors.length > 0 },
+      );
     } else if (fetcher.data.ok) {
       shopify.toast.show("Synced to Daraz");
     } else {
@@ -157,14 +169,34 @@ export default function DarazProducts() {
 
   const isSyncingAll =
     fetcher.state !== "idle" && fetcher.formData?.get("intent") === "syncAll";
+  const isPullingFromDaraz =
+    fetcher.state !== "idle" && fetcher.formData?.get("intent") === "pullFromDaraz";
   const syncingProductId =
-    fetcher.state !== "idle" && fetcher.formData?.get("intent") !== "syncAll"
+    fetcher.state !== "idle" && !fetcher.formData?.get("intent")
       ? String(fetcher.formData?.get("productId"))
       : null;
 
   return (
     <Page>
       <TitleBar title="Daraz products" />
+      <div style={{ marginBottom: "1rem" }}>
+        <Card>
+          <InlineStack align="space-between" blockAlign="center">
+            <Text as="p" variant="bodyMd">
+              Price and stock are owned by Daraz - check for changes made
+              directly in Daraz's seller center and pull them into Shopify.
+            </Text>
+            <Button
+              loading={isPullingFromDaraz}
+              onClick={() =>
+                fetcher.submit({ intent: "pullFromDaraz" }, { method: "POST" })
+              }
+            >
+              Check Daraz for updates
+            </Button>
+          </InlineStack>
+        </Card>
+      </div>
       {data.pendingCount > 0 && (
         <div style={{ marginBottom: "1rem" }}>
           <Card>

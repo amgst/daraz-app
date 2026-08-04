@@ -506,10 +506,13 @@ export async function getCategoryAttributes(
 // Follows the general IOP order API shape (Daraz is built on the same
 // gateway as Lazada Open Platform) - verify exact field names against the
 // live docs before relying on them, same caveat as the category tree above.
-// /orders/get requires a created_after (or update_after) bound, so default
-// to a 30-day lookback when the caller doesn't specify one.
+// /orders/get requires a created_after (or update_after) bound - Lazada's
+// docs (same IOP gateway) don't document any max span for it, so default far
+// enough back to cover a seller's whole history rather than just recent
+// orders, and cap Limit at the documented max of 100.
+const ORDERS_MAX_LIMIT = 100;
 
-function defaultOrdersLookback(days = 30): string {
+function defaultOrdersLookback(days = 3650): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
@@ -549,7 +552,7 @@ export async function getOrders(
       sort_by: "created_at",
       sort_direction: "DESC",
       offset: String(filter.offset ?? 0),
-      limit: String(filter.limit ?? 50),
+      limit: String(Math.min(filter.limit ?? ORDERS_MAX_LIMIT, ORDERS_MAX_LIMIT)),
       created_after: filter.createdAfter ?? defaultOrdersLookback(),
     },
     accessToken,

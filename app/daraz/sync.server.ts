@@ -627,3 +627,136 @@ export async function importDarazProduct(
 
   return { shopifyProductId, warnings };
 }
+
+const PRODUCT_VARIANTS_FOR_PULL_QUERY = `#graphql
+  query DarazPullVariants($id: ID!) {
+    product(id: $id) {
+      variants(first: 100) {
+        nodes {
+          id
+          sku
+          price
+          inventoryQuantity
+          inventoryItem { id }
+        }
+      }
+    }
+  }
+`;
+
+export interface PullResult {
+  productsChecked: number;
+  productsUpdated: number;
+  errors: string[];
+}
+
+// Authority split for already-mapped products: Shopify owns content
+// (pushed via syncProduct), Daraz owns price/stock - Daraz's current values
+// always win here, overwriting whatever Shopify has, since price/stock is
+// often adjusted directly in Daraz's seller tools rather than through
+// Shopify. Matches Shopify variants to Daraz SKUs by SellerSku, which both
+// import and sync already use as the variant's `sku` field.
+export async function pullPriceStockFromDaraz(shop: string): Promise<PullResult> {
+  const darazSession = await getValidAccessToken(shop);
+  if (!darazSession) {
+    throw new Error(`Shop ${shop} has no connected Daraz account`);
+  }
+  const darazOpts = {
+    accessToken: darazSession.accessToken,
+    country: darazSession.country,
+  };
+  const { admin } = await unauthenticated.admin(shop);
+
+  const mappings = await db.productMapping.findMany({
+    where: { shop, darazItemId: { not: null } },
+  });
+
+  const result: PullResult = { productsChecked: 0, productsUpdated: 0, errors: [] };
+  let locationId: string | null = null;
+
+  for (const mapping of mappings) {
+    result.productsChecked++;
+    try {
+      const detail = await getProductDetail(darazOpts, mapping.darazItemId!);
+      const shopifyGid = `gid://shopify/Product/${mapping.shopifyProductId}`;
+
+      const variantsResponse = await admin.graphql(PRODUCT_VARIANTS_FOR_PULL_QUERY, {
+        variables: { id: shopifyGid },
+      });
+      const variantsJson = await variantsResponse.json();
+      const variants = (variantsJson.data?.product?.variants?.nodes ?? []) as Array<{
+        id: string;
+        sku: string | null;
+        price: string;
+        inventoryQuantity: number | null;
+        inventoryItem: { id: string };
+      }>;
+      const variantBySku = new Map(variants.filter((v) => v.sku).map((v) => [v.sku, v]));
+
+      const priceUpdates: Array<{ id: string; price: string }> = [];
+      const inventoryUpdates: Array<{ inventoryItemId: string; quantity: number }> = [];
+
+      for (const sku of detail.skus) {
+        const variant = variantBySku.get(sku.SellerSku);
+        if (!variant) continue;
+
+        const { price } = effectivePrice(sku);
+        if (price !== variant.price) {
+          priceUpdates.push({ id: variant.id, price });
+        }
+
+        const quantity = Number(sku.quantity ?? 0);
+        if (Number.isFinite(quantity) && quantity !== (variant.inventoryQuantity ?? 0)) {
+          inventoryUpdates.push({ inventoryItemId: variant.inventoryItem.id, quantity });
+        }
+      }
+
+      if (priceUpdates.length > 0) {
+        await admin.graphql(VARIANTS_BULK_UPDATE_MUTATION, {
+          variables: { productId: shopifyGid, variants: priceUpdates },
+        });
+      }
+
+      if (inventoryUpdates.length > 0) {
+        if (!locationId) {
+          const locationResponse = await admin.graphql(PRIMARY_LOCATION_QUERY);
+          const locationJson = await locationResponse.json();
+          locationId = locationJson.data?.locations?.nodes?.[0]?.id as string | undefined ?? null;
+        }
+        const resolvedLocationId = locationId;
+        if (resolvedLocationId) {
+          await admin.graphql(SET_INVENTORY_MUTATION, {
+            variables: {
+              input: {
+                reason: "correction",
+                setQuantities: inventoryUpdates.map((u) => ({
+                  inventoryItemId: u.inventoryItemId,
+                  locationId: resolvedLocationId,
+                  quantity: u.quantity,
+                })),
+              },
+            },
+          });
+        }
+      }
+
+      if (priceUpdates.length > 0 || inventoryUpdates.length > 0) {
+        result.productsUpdated++;
+      }
+
+      await db.productMapping.update({
+        where: { id: mapping.id },
+        data: { lastSyncedAt: new Date(), lastError: null },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      result.errors.push(`${mapping.shopifyProductId}: ${message}`);
+      await db.productMapping.update({
+        where: { id: mapping.id },
+        data: { lastError: message },
+      });
+    }
+  }
+
+  return result;
+}
