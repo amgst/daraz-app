@@ -15,7 +15,7 @@ import {
   ResourceItem,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
 import { getProducts, getRawProductDetail } from "../daraz/client.server";
@@ -46,14 +46,50 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     { limit: PAGE_SIZE, offset },
   );
 
-  const linkedItemIds = new Set(
-    (
-      await db.productMapping.findMany({
-        where: { shop: session.shop, darazItemId: { not: null } },
-        select: { darazItemId: true },
-      })
-    ).map((m) => m.darazItemId),
-  );
+  const pageItemIds = new Set(darazProducts.map((p) => p.item_id));
+  const relevantMappings = (
+    await db.productMapping.findMany({
+      where: { shop: session.shop, darazItemId: { not: null } },
+      select: { id: true, darazItemId: true, shopifyProductId: true },
+    })
+  ).filter((m) => m.darazItemId && pageItemIds.has(m.darazItemId));
+
+  // A mapping row surviving in our DB doesn't mean the Shopify product still
+  // exists - the merchant may have deleted it directly in Shopify admin,
+  // which we have no webhook for. Confirm against Shopify before trusting
+  // it, and drop mappings that point at nothing so re-import isn't blocked.
+  const linkedItemIds = new Set<string>();
+  if (relevantMappings.length > 0) {
+    const { admin } = await unauthenticated.admin(session.shop);
+    const gids = relevantMappings.map((m) => `gid://shopify/Product/${m.shopifyProductId}`);
+    const existsResponse = await admin.graphql(
+      `#graphql
+        query DarazImportCheckExisting($ids: [ID!]!) {
+          nodes(ids: $ids) { id }
+        }
+      `,
+      { variables: { ids: gids } },
+    );
+    const existsJson = await existsResponse.json();
+    const existingGids = new Set(
+      ((existsJson.data?.nodes ?? []) as Array<{ id: string } | null>)
+        .filter((n): n is { id: string } => n !== null)
+        .map((n) => n.id),
+    );
+
+    const staleMappingIds: string[] = [];
+    for (const m of relevantMappings) {
+      const gid = `gid://shopify/Product/${m.shopifyProductId}`;
+      if (existingGids.has(gid)) {
+        linkedItemIds.add(m.darazItemId!);
+      } else {
+        staleMappingIds.push(m.id);
+      }
+    }
+    if (staleMappingIds.length > 0) {
+      await db.productMapping.deleteMany({ where: { id: { in: staleMappingIds } } });
+    }
+  }
 
   const products = darazProducts.map((p) => ({
     itemId: p.item_id,
