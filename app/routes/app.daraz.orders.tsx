@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData } from "@remix-run/react";
+import { Form, useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -10,13 +10,18 @@ import {
   EmptyState,
   InlineStack,
   BlockStack,
-  ResourceList,
-  ResourceItem,
+  IndexTable,
+  TextField,
+  Select,
+  Pagination,
 } from "@shopify/polaris";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { importDarazOrders } from "../daraz/orders.server";
+import { DARAZ_SITES, isDarazCountry } from "../daraz/countries";
+
+const PAGE_SIZE = 20;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -25,15 +30,71 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shop: session.shop },
   });
   if (!darazAccount) {
-    return { connected: false as const, orders: [] };
+    return {
+      connected: false as const,
+      orders: [],
+      statuses: [] as string[],
+      stats: null,
+      page: 1,
+      totalCount: 0,
+      hasNext: false,
+      hasPrevious: false,
+      status: "",
+      q: "",
+      currency: null as string | null,
+    };
   }
 
-  const orders = await db.darazOrder.findMany({
-    where: { shop: session.shop },
-    include: { items: true },
-    orderBy: [{ darazCreatedAt: "desc" }, { importedAt: "desc" }],
-    take: 100,
-  });
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") ?? "";
+  const q = url.searchParams.get("q") ?? "";
+  const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
+
+  const where = {
+    shop: session.shop,
+    ...(status ? { status } : {}),
+    ...(q
+      ? {
+          OR: [
+            { orderNumber: { contains: q, mode: "insensitive" as const } },
+            { darazOrderId: { contains: q, mode: "insensitive" as const } },
+            { customerName: { contains: q, mode: "insensitive" as const } },
+          ],
+        }
+      : {}),
+  };
+
+  const [orders, totalCount, allForStats, distinctStatuses] = await Promise.all([
+    db.darazOrder.findMany({
+      where,
+      include: { items: true },
+      orderBy: [{ darazCreatedAt: "desc" }, { importedAt: "desc" }],
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+    }),
+    db.darazOrder.count({ where }),
+    db.darazOrder.findMany({
+      where: { shop: session.shop },
+      select: { status: true, totalAmount: true },
+    }),
+    db.darazOrder.findMany({
+      where: { shop: session.shop },
+      distinct: ["status"],
+      select: { status: true },
+    }),
+  ]);
+
+  const statsByStatus = new Map<string, { count: number; revenue: number }>();
+  let totalRevenue = 0;
+  for (const o of allForStats) {
+    const amount = o.totalAmount ? Number(o.totalAmount) : 0;
+    const safeAmount = Number.isFinite(amount) ? amount : 0;
+    totalRevenue += safeAmount;
+    const entry = statsByStatus.get(o.status) ?? { count: 0, revenue: 0 };
+    entry.count++;
+    entry.revenue += safeAmount;
+    statsByStatus.set(o.status, entry);
+  }
 
   return {
     connected: true as const,
@@ -45,10 +106,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       status: o.status,
       itemsCount: o.itemsCount,
       totalAmount: o.totalAmount,
-      currency: o.currency,
       darazCreatedAt: o.darazCreatedAt,
       itemNames: o.items.map((i) => i.name).filter((n): n is string => Boolean(n)),
     })),
+    statuses: distinctStatuses.map((s) => s.status).sort(),
+    stats: {
+      totalOrders: allForStats.length,
+      totalRevenue,
+      byStatus: Array.from(statsByStatus.entries())
+        .map(([s, v]) => ({ status: s, ...v }))
+        .sort((a, b) => b.count - a.count),
+    },
+    page,
+    totalCount,
+    hasNext: page * PAGE_SIZE < totalCount,
+    hasPrevious: page > 1,
+    status,
+    q,
+    currency: isDarazCountry(darazAccount.country) ? DARAZ_SITES[darazAccount.country].currency : null,
   };
 };
 
@@ -75,12 +150,30 @@ const STATUS_TONE: Record<string, "success" | "attention" | "critical" | "info">
   returned: "critical",
 };
 
+function statusTone(status: string) {
+  return STATUS_TONE[status.toLowerCase()] ?? "info";
+}
+
+function buildUrl(params: Record<string, string | number>) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== "" && value !== undefined && value !== null) {
+      search.set(key, String(value));
+    }
+  }
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
 export default function DarazOrders() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
+  const navigate = useNavigate();
 
   const isSyncing = fetcher.state !== "idle";
+  const [q, setQ] = useState(data.q);
+  const [status, setStatus] = useState(data.status);
 
   useEffect(() => {
     if (!fetcher.data) return;
@@ -110,6 +203,18 @@ export default function DarazOrders() {
     );
   }
 
+  const statusOptions = [
+    { label: "All statuses", value: "" },
+    ...data.statuses.map((s) => ({ label: s, value: s })),
+  ];
+
+  const money = (amount: string | number | null) => {
+    if (amount === null) return "-";
+    const n = typeof amount === "string" ? Number(amount) : amount;
+    if (!Number.isFinite(n)) return "-";
+    return `${n.toLocaleString()}${data.currency ? ` ${data.currency}` : ""}`;
+  };
+
   return (
     <Page>
       <TitleBar title="Daraz orders" />
@@ -129,52 +234,143 @@ export default function DarazOrders() {
             </Button>
           </InlineStack>
         </Card>
+
+        {data.stats && (
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack gap="600">
+                <BlockStack gap="050">
+                  <Text as="span" tone="subdued" variant="bodySm">
+                    Total orders
+                  </Text>
+                  <Text as="span" variant="headingLg">
+                    {data.stats.totalOrders}
+                  </Text>
+                </BlockStack>
+                <BlockStack gap="050">
+                  <Text as="span" tone="subdued" variant="bodySm">
+                    Total value
+                  </Text>
+                  <Text as="span" variant="headingLg">
+                    {money(data.stats.totalRevenue)}
+                  </Text>
+                </BlockStack>
+              </InlineStack>
+              <InlineStack gap="200">
+                {data.stats.byStatus.map((s) => (
+                  <Badge key={s.status} tone={statusTone(s.status)}>
+                    {`${s.status}: ${s.count}`}
+                  </Badge>
+                ))}
+              </InlineStack>
+            </BlockStack>
+          </Card>
+        )}
+
+        <Card>
+          <Form method="get">
+            <InlineStack gap="300" blockAlign="end">
+              <div style={{ minWidth: 260 }}>
+                <TextField
+                  label="Search"
+                  name="q"
+                  autoComplete="off"
+                  value={q}
+                  onChange={setQ}
+                  placeholder="Order number or customer name"
+                />
+              </div>
+              <div style={{ minWidth: 220 }}>
+                <Select label="Status" name="status" options={statusOptions} value={status} onChange={setStatus} />
+              </div>
+              <Button submit>Filter</Button>
+              {(data.status || data.q) && (
+                <Button variant="plain" onClick={() => navigate("/app/daraz/orders")}>
+                  Clear
+                </Button>
+              )}
+            </InlineStack>
+          </Form>
+        </Card>
+
         <Card padding="0">
           {data.orders.length === 0 ? (
             <EmptyState
-              heading="No orders imported yet"
+              heading="No orders found"
               image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
-              <p>Click "Sync orders" to pull recent orders from Daraz.</p>
+              <p>
+                {data.status || data.q
+                  ? "No orders match this filter."
+                  : 'Click "Sync orders" to pull orders from Daraz.'}
+              </p>
             </EmptyState>
           ) : (
-            <ResourceList
+            <IndexTable
               resourceName={{ singular: "order", plural: "orders" }}
-              items={data.orders}
-              renderItem={(order) => (
-                <ResourceItem id={order.id} onClick={() => {}}>
-                  <InlineStack align="space-between" blockAlign="center">
-                    <BlockStack gap="100">
-                      <InlineStack gap="200" blockAlign="center">
-                        <Text as="span" variant="bodyMd" fontWeight="semibold">
-                          {order.orderNumber ?? order.darazOrderId}
-                        </Text>
-                        <Badge tone={STATUS_TONE[order.status.toLowerCase()] ?? "info"}>
-                          {order.status}
-                        </Badge>
-                      </InlineStack>
-                      <Text as="span" tone="subdued" variant="bodySm">
-                        {order.customerName ?? "Unknown customer"} &middot;{" "}
-                        {order.itemsCount} item(s)
-                        {order.itemNames.length > 0 ? `: ${order.itemNames.join(", ")}` : ""}
-                      </Text>
-                    </BlockStack>
-                    <BlockStack gap="100" align="end">
-                      <Text as="span" variant="bodyMd" fontWeight="semibold">
-                        {order.totalAmount ? `${order.totalAmount} ${order.currency ?? ""}` : "-"}
-                      </Text>
-                      {order.darazCreatedAt && (
-                        <Text as="span" tone="subdued" variant="bodySm">
-                          {new Date(order.darazCreatedAt).toLocaleDateString()}
-                        </Text>
-                      )}
-                    </BlockStack>
-                  </InlineStack>
-                </ResourceItem>
-              )}
-            />
+              itemCount={data.orders.length}
+              selectable={false}
+              headings={[
+                { title: "Order" },
+                { title: "Customer" },
+                { title: "Status" },
+                { title: "Items" },
+                { title: "Total" },
+                { title: "Date" },
+              ]}
+            >
+              {data.orders.map((order, index) => (
+                <IndexTable.Row
+                  id={order.id}
+                  key={order.id}
+                  position={index}
+                  onClick={() => navigate(`/app/daraz/orders/${order.id}`)}
+                >
+                  <IndexTable.Cell>
+                    <Text as="span" fontWeight="semibold">
+                      {order.orderNumber ?? order.darazOrderId}
+                    </Text>
+                  </IndexTable.Cell>
+                  <IndexTable.Cell>{order.customerName ?? "Unknown"}</IndexTable.Cell>
+                  <IndexTable.Cell>
+                    <Badge tone={statusTone(order.status)}>{order.status}</Badge>
+                  </IndexTable.Cell>
+                  <IndexTable.Cell>
+                    <Text as="span" tone="subdued">
+                      {order.itemsCount} item(s)
+                      {order.itemNames.length > 0 ? `: ${order.itemNames.join(", ")}` : ""}
+                    </Text>
+                  </IndexTable.Cell>
+                  <IndexTable.Cell>{money(order.totalAmount)}</IndexTable.Cell>
+                  <IndexTable.Cell>
+                    {order.darazCreatedAt
+                      ? new Date(order.darazCreatedAt).toLocaleDateString()
+                      : "-"}
+                  </IndexTable.Cell>
+                </IndexTable.Row>
+              ))}
+            </IndexTable>
           )}
         </Card>
+
+        {(data.hasNext || data.hasPrevious) && (
+          <InlineStack align="center">
+            <Pagination
+              hasPrevious={data.hasPrevious}
+              onPrevious={() =>
+                navigate(
+                  `/app/daraz/orders${buildUrl({ status: data.status, q: data.q, page: data.page - 1 })}`,
+                )
+              }
+              hasNext={data.hasNext}
+              onNext={() =>
+                navigate(
+                  `/app/daraz/orders${buildUrl({ status: data.status, q: data.q, page: data.page + 1 })}`,
+                )
+              }
+            />
+          </InlineStack>
+        )}
       </BlockStack>
     </Page>
   );

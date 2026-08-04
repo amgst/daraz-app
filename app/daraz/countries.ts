@@ -2,11 +2,11 @@
 // config.server.ts, which also holds secrets/env access and gets stripped
 // from the client bundle by Remix).
 export const DARAZ_SITES = {
-  PK: { label: "Pakistan", host: "https://api.daraz.pk" },
-  BD: { label: "Bangladesh", host: "https://api.daraz.com.bd" },
-  LK: { label: "Sri Lanka", host: "https://api.daraz.lk" },
-  NP: { label: "Nepal", host: "https://api.daraz.com.np" },
-  MM: { label: "Myanmar", host: "https://api.shop.com.mm" },
+  PK: { label: "Pakistan", host: "https://api.daraz.pk", currency: "PKR" },
+  BD: { label: "Bangladesh", host: "https://api.daraz.com.bd", currency: "BDT" },
+  LK: { label: "Sri Lanka", host: "https://api.daraz.lk", currency: "LKR" },
+  NP: { label: "Nepal", host: "https://api.daraz.com.np", currency: "NPR" },
+  MM: { label: "Myanmar", host: "https://api.shop.com.mm", currency: "MMK" },
 } as const;
 
 export type DarazCountry = keyof typeof DARAZ_SITES;
