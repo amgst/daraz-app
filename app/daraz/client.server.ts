@@ -502,6 +502,119 @@ export async function getCategoryAttributes(
   });
 }
 
+// ---- Orders ----
+// Follows the general IOP order API shape (Daraz is built on the same
+// gateway as Lazada Open Platform) - verify exact field names against the
+// live docs before relying on them, same caveat as the category tree above.
+// /orders/get requires a created_after (or update_after) bound, so default
+// to a 30-day lookback when the caller doesn't specify one.
+
+function defaultOrdersLookback(days = 30): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+export interface DarazOrderSummary {
+  orderId: string;
+  orderNumber: string | null;
+  customerName: string | null;
+  status: string;
+  itemsCount: number;
+  totalAmount: string | null;
+  currency: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export async function getOrders(
+  { accessToken, country }: DarazProductClientOptions,
+  filter: { createdAfter?: string; offset?: number; limit?: number } = {},
+): Promise<DarazOrderSummary[]> {
+  const result = await request<{
+    data?: {
+      orders?: Array<{
+        order_id: unknown;
+        order_number?: unknown;
+        customer_first_name?: string;
+        customer_last_name?: string;
+        statuses?: string[];
+        items_count?: unknown;
+        price?: unknown;
+        created_at?: string;
+        updated_at?: string;
+      }>;
+    };
+  }>({
+    apiPath: "/orders/get",
+    params: {
+      sort_by: "created_at",
+      sort_direction: "DESC",
+      offset: String(filter.offset ?? 0),
+      limit: String(filter.limit ?? 50),
+      created_after: filter.createdAfter ?? defaultOrdersLookback(),
+    },
+    accessToken,
+    apiHost: apiHostFor(country),
+    method: "GET",
+  });
+
+  return (result.data?.orders ?? []).map((o) => ({
+    orderId: String(o.order_id),
+    orderNumber: o.order_number !== undefined ? String(o.order_number) : null,
+    customerName:
+      [o.customer_first_name, o.customer_last_name].filter(Boolean).join(" ").trim() || null,
+    status: o.statuses?.[0] ?? "unknown",
+    itemsCount: o.items_count !== undefined ? Number(o.items_count) : 0,
+    totalAmount: o.price !== undefined ? String(o.price) : null,
+    currency: null,
+    createdAt: o.created_at ?? null,
+    updatedAt: o.updated_at ?? null,
+  }));
+}
+
+export interface DarazOrderItemDetail {
+  orderItemId: string;
+  sku: string | null;
+  name: string | null;
+  imageUrl: string | null;
+  price: string | null;
+  currency: string | null;
+  status: string | null;
+}
+
+export async function getOrderItems(
+  { accessToken, country }: DarazProductClientOptions,
+  orderId: string,
+): Promise<DarazOrderItemDetail[]> {
+  const result = await request<{
+    data?: Array<{
+      order_item_id: unknown;
+      sku?: string;
+      shop_sku?: string;
+      name?: string;
+      product_main_image?: string;
+      item_price?: unknown;
+      currency?: string;
+      status?: string;
+    }>;
+  }>({
+    apiPath: "/order/items/get",
+    params: { order_id: orderId },
+    accessToken,
+    apiHost: apiHostFor(country),
+    method: "GET",
+  });
+
+  return (result.data ?? []).map((item) => ({
+    orderItemId: String(item.order_item_id),
+    sku: item.sku ?? item.shop_sku ?? null,
+    name: item.name ?? null,
+    imageUrl: item.product_main_image ?? null,
+    price: item.item_price !== undefined ? String(item.item_price) : null,
+    currency: item.currency ?? null,
+    status: item.status ?? null,
+  }));
+}
+
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

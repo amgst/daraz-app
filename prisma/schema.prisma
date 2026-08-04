@@ -55,6 +55,7 @@ model DarazAccount {
 
   productMappings ProductMapping[]
   syncJobs        SyncJob[]
+  darazOrders     DarazOrder[]
 }
 
 enum SyncStatus {
@@ -116,4 +117,45 @@ model SyncJob {
 
   @@index([status, createdAt])
   @@index([shop, shopifyProductId])
+}
+
+// Daraz orders mirrored into our own DB (v1: display only, nothing pushed
+// back to Shopify's Order object - that needs Shopify's protected orderCreate
+// scope, which this app hasn't requested yet).
+model DarazOrder {
+  id             String    @id @default(cuid())
+  shop           String
+  darazOrderId   String
+  orderNumber    String?
+  customerName   String?
+  status         String
+  itemsCount     Int       @default(0)
+  totalAmount    String?
+  currency       String?
+  darazCreatedAt DateTime?
+  darazUpdatedAt DateTime?
+  importedAt     DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  darazAccount DarazAccount     @relation(fields: [shop], references: [shop], onDelete: Cascade)
+  items        DarazOrderItem[]
+
+  @@unique([shop, darazOrderId])
+  @@index([shop, darazCreatedAt])
+}
+
+model DarazOrderItem {
+  id               String  @id @default(cuid())
+  orderId          String
+  darazOrderItemId String
+  sku              String?
+  name             String?
+  imageUrl         String?
+  price            String?
+  currency         String?
+  status           String?
+
+  order DarazOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
 }

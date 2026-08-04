@@ -45,6 +45,34 @@ interface ShopifyProduct {
   };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Media created via productCreateMedia often comes back PROCESSING - Shopify
+// is still fetching/transcoding the image. Poll a few times so failures that
+// only resolve a couple seconds later still get caught, instead of only
+// checking the instant after upload (which used to miss them).
+async function waitForMediaStatus(
+  admin: { graphql: (query: string, opts: { variables: Record<string, unknown> }) => Promise<Response> },
+  mediaNodes: Array<{ id: string; status: string }>,
+): Promise<Array<{ id: string; status: string }>> {
+  let nodes = mediaNodes;
+  for (let attempt = 0; attempt < 3 && nodes.some((m) => m.status === "PROCESSING"); attempt++) {
+    await sleep(2000);
+    const pendingIds = nodes.filter((m) => m.status === "PROCESSING").map((m) => m.id);
+    const statusResponse = await admin.graphql(MEDIA_STATUS_QUERY, { variables: { ids: pendingIds } });
+    const statusJson = await statusResponse.json();
+    const updated = new Map<string, string>(
+      ((statusJson.data?.nodes ?? []) as Array<{ id: string; status: string } | null>)
+        .filter((n): n is { id: string; status: string } => n !== null)
+        .map((n) => [n.id, n.status]),
+    );
+    nodes = nodes.map((m) => (updated.has(m.id) ? { ...m, status: updated.get(m.id)! } : m));
+  }
+  return nodes;
+}
+
 async function fetchShopifyProduct(
   shop: string,
   shopifyProductId: string,
@@ -283,6 +311,21 @@ const PRODUCT_CREATE_MEDIA_MUTATION = `#graphql
   }
 `;
 
+// productCreateMedia returns PROCESSING for images Shopify hasn't finished
+// fetching/transcoding yet - checking status right after the mutation misses
+// failures that only resolve a couple seconds later. Polled by
+// waitForMediaStatus below.
+const MEDIA_STATUS_QUERY = `#graphql
+  query DarazImportMediaStatus($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on MediaImage {
+        id
+        status
+      }
+    }
+  }
+`;
+
 const PRIMARY_LOCATION_QUERY = `#graphql
   query DarazImportPrimaryLocation {
     locations(first: 1) { nodes { id } }
@@ -494,10 +537,11 @@ export async function importDarazProduct(
     });
     const mediaJson = await mediaResponse.json();
     const mediaErrors = mediaJson.data?.productCreateMedia?.mediaUserErrors ?? [];
-    const mediaNodes = (mediaJson.data?.productCreateMedia?.media ?? []) as Array<{
+    const initialMediaNodes = (mediaJson.data?.productCreateMedia?.media ?? []) as Array<{
       id: string;
       status: string;
     }>;
+    const mediaNodes = await waitForMediaStatus(admin, initialMediaNodes);
     const failedMedia = mediaNodes.filter((m) => m.status === "FAILED");
     // Don't fail the whole import over images - the product/variants are
     // already created and worth keeping either way - but don't hide it
