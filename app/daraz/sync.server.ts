@@ -434,6 +434,13 @@ export async function importDarazProduct(
       .map(([k, v]) => `${k}=${v}`)
       .join("|");
 
+  const skuOptionValues = (sku: DarazSkuDetail): Record<string, string> =>
+    Object.fromEntries(
+      detail.variations
+        .map((v) => [v.label, sku.saleProp[v.key]] as const)
+        .filter((entry): entry is [string, string] => Boolean(entry[1])),
+    );
+
   const variantBySignature = new Map(
     initialVariants.map((v) => [
       optionSignature(Object.fromEntries(v.selectedOptions.map((o) => [o.name, o.value]))),
@@ -448,12 +455,7 @@ export async function importDarazProduct(
   const unmatchedSkus: DarazSkuDetail[] = [];
 
   for (const sku of detail.skus) {
-    const skuOptionValues = Object.fromEntries(
-      detail.variations
-        .map((v) => [v.label, sku.saleProp[v.key]] as const)
-        .filter((entry): entry is [string, string] => Boolean(entry[1])),
-    );
-    const signature = optionSignature(skuOptionValues);
+    const signature = optionSignature(skuOptionValues(sku));
     const variant =
       variantBySignature.get(signature) ??
       (initialVariants.length === 1 && detail.skus.length === 1 ? initialVariants[0] : undefined);
@@ -503,10 +505,19 @@ export async function importDarazProduct(
         productId: shopifyProductGid,
         variants: unmatchedSkus.map((sku) => {
           const { price, compareAtPrice } = effectivePrice(sku);
+          const values = skuOptionValues(sku);
           return {
             price,
             ...(compareAtPrice ? { compareAtPrice } : {}),
             inventoryItem: { sku: sku.SellerSku },
+            ...(Object.keys(values).length > 0
+              ? {
+                  optionValues: Object.entries(values).map(([optionName, name]) => ({
+                    optionName,
+                    name,
+                  })),
+                }
+              : {}),
           };
         }),
       },
