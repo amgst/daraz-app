@@ -13,8 +13,8 @@ import {
   Link,
   Select,
 } from "@shopify/polaris";
-import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
+import { useToast } from "../components/ToastProvider";
 import db from "../db.server";
 import { createState } from "../daraz/state.server";
 import { getAuthorizeUrl, getCategoryTree } from "../daraz/client.server";
@@ -92,7 +92,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function DarazIndex() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const shopify = useAppBridge();
+  const toast = useToast();
   const [country, setCountry] = useState<string>(COUNTRY_OPTIONS[0].value);
 
   const isConnecting =
@@ -106,16 +106,15 @@ export default function DarazIndex() {
 
   useEffect(() => {
     if (fetcher.data && "authorizeUrl" in fetcher.data && fetcher.data.authorizeUrl) {
-      // Break out of the embedded iframe - Daraz's login page refuses to render inside it.
       window.open(fetcher.data.authorizeUrl, "_top");
     }
     if (fetcher.data && "disconnected" in fetcher.data && fetcher.data.disconnected) {
-      shopify.toast.show("Daraz account disconnected");
+      toast.show("Daraz account disconnected");
     }
     if (fetcher.data && "error" in fetcher.data && fetcher.data.error) {
-      shopify.toast.show(fetcher.data.error, { isError: true });
+      toast.show(fetcher.data.error, { isError: true });
     }
-  }, [fetcher.data, shopify]);
+  }, [fetcher.data, toast]);
 
   const connect = () =>
     fetcher.submit({ intent: "connect", country }, { method: "POST" });
@@ -128,8 +127,7 @@ export default function DarazIndex() {
     fetcher.data && "testResult" in fetcher.data ? fetcher.data.testResult : null;
 
   return (
-    <Page>
-      <TitleBar title="Daraz connection" />
+    <Page title="Daraz connection">
       <BlockStack gap="500">
         <Layout>
           <Layout.Section>

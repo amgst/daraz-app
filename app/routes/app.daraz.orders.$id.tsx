@@ -12,7 +12,6 @@ import {
   Thumbnail,
   EmptyState,
 } from "@shopify/polaris";
-import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { DARAZ_SITES, isDarazCountry } from "../daraz/countries";
@@ -84,8 +83,7 @@ export default function DarazOrderDetail() {
 
   if (!data.found) {
     return (
-      <Page>
-        <TitleBar title="Order not found" />
+      <Page title="Order not found">
         <Card>
           <EmptyState
             heading="Order not found"
@@ -110,8 +108,8 @@ export default function DarazOrderDetail() {
   return (
     <Page
       backAction={{ content: "Orders", onAction: () => navigate("/app/daraz/orders") }}
+      title={`Order ${order.orderNumber ?? order.darazOrderId}`}
     >
-      <TitleBar title={`Order ${order.orderNumber ?? order.darazOrderId}`} />
       <BlockStack gap="400">
         <Card>
           <BlockStack gap="300">

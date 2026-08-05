@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData } from "@remix-run/react";
+import { useFetcher, useLoaderData, useRouteError, isRouteErrorResponse } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -12,8 +12,8 @@ import {
   Divider,
   Select,
 } from "@shopify/polaris";
-import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
+import { useToast } from "../components/ToastProvider";
 import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
 import {
@@ -35,32 +35,45 @@ const PRODUCT_TITLE_QUERY = `#graphql
 `;
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
-  const productId = params.id!;
+  console.log("[Daraz mapping] loader start, params.id =", params.id);
+  try {
+    const { admin, session } = await authenticate.admin(request);
+    const productId = params.id!;
+    console.log("[Daraz mapping] authenticated, shop =", session.shop, "productId =", productId);
 
-  const response = await admin.graphql(PRODUCT_TITLE_QUERY, {
-    variables: { id: `gid://shopify/Product/${productId}` },
-  });
-  const json = await response.json();
-  const title = json.data?.product?.title ?? "Unknown product";
-  const defaultSku = json.data?.product?.variants?.nodes?.[0]?.sku ?? "";
+    const response = await admin.graphql(PRODUCT_TITLE_QUERY, {
+      variables: { id: `gid://shopify/Product/${productId}` },
+    });
+    const json = await response.json();
+    const graphqlErrors = (json as { errors?: unknown }).errors;
+    if (graphqlErrors) {
+      console.error("[Daraz mapping] Shopify GraphQL errors:", JSON.stringify(graphqlErrors));
+    }
+    const title = json.data?.product?.title ?? "Unknown product";
+    const defaultSku = json.data?.product?.variants?.nodes?.[0]?.sku ?? "";
+    console.log("[Daraz mapping] product title =", title);
 
-  const mapping = await db.productMapping.findUnique({
-    where: {
-      shop_shopifyProductId: { shop: session.shop, shopifyProductId: productId },
-    },
-  });
+    const mapping = await db.productMapping.findUnique({
+      where: {
+        shop_shopifyProductId: { shop: session.shop, shopifyProductId: productId },
+      },
+    });
+    console.log("[Daraz mapping] existing mapping =", JSON.stringify(mapping));
 
-  return {
-    productId,
-    title,
-    defaultSku,
-    darazItemId: mapping?.darazItemId ?? null,
-    categoryId: mapping?.darazCategoryId ?? "",
-    attributes: mapping?.attributesJson
-      ? (JSON.parse(mapping.attributesJson) as Record<string, string>)
-      : {},
-  };
+    return {
+      productId,
+      title,
+      defaultSku,
+      darazItemId: mapping?.darazItemId ?? null,
+      categoryId: mapping?.darazCategoryId ?? "",
+      attributes: mapping?.attributesJson
+        ? (JSON.parse(mapping.attributesJson) as Record<string, string>)
+        : {},
+    };
+  } catch (error) {
+    console.error("[Daraz mapping] loader threw:", error);
+    throw error;
+  }
 };
 
 // Best-effort: Daraz's attribute-schema response shape is unverified against
@@ -245,7 +258,7 @@ export default function ProductMappingPage() {
   const fetcher = useFetcher<typeof action>();
   const linkFetcher = useFetcher<typeof action>();
   const categoryFetcher = useFetcher<typeof action>();
-  const shopify = useAppBridge();
+  const toast = useToast();
 
   const [query, setQuery] = useState(data.defaultSku);
   const [categoryId, setCategoryId] = useState(data.categoryId);
@@ -255,7 +268,7 @@ export default function ProductMappingPage() {
   useEffect(() => {
     if (categoryFetcher.data?.intent !== "loadCategoryTree") return;
     if (categoryFetcher.data.error) {
-      shopify.toast.show(categoryFetcher.data.error, { isError: true });
+      toast.show(categoryFetcher.data.error, { isError: true });
     }
     setCategoryTree(categoryFetcher.data.categoryTree);
     setCategoryPath(findCategoryPath(categoryFetcher.data.categoryTree, categoryId) ?? []);
@@ -286,15 +299,15 @@ export default function ProductMappingPage() {
         .filter((name) => !existingKeys.has(name))
         .map((name) => ({ key: name, value: "" }));
       if (newPairs.length === 0) {
-        shopify.toast.show("No attribute suggestions available - add manually");
+        toast.show("No attribute suggestions available - add manually");
       } else {
         setPairs((prev) => [...prev, ...newPairs]);
       }
     } else if (fetcher.data.intent === "save") {
       if (fetcher.data.ok) {
-        shopify.toast.show("Mapping saved");
+        toast.show("Mapping saved");
       } else {
-        shopify.toast.show(fetcher.data.error ?? "Save failed", { isError: true });
+        toast.show(fetcher.data.error ?? "Save failed", { isError: true });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -303,12 +316,12 @@ export default function ProductMappingPage() {
   useEffect(() => {
     if (!linkFetcher.data) return;
     if (linkFetcher.data.intent === "searchDaraz" && linkFetcher.data.error) {
-      shopify.toast.show(linkFetcher.data.error, { isError: true });
+      toast.show(linkFetcher.data.error, { isError: true });
     }
     if (linkFetcher.data.intent === "link" && linkFetcher.data.ok) {
-      shopify.toast.show("Linked to existing Daraz product");
+      toast.show("Linked to existing Daraz product");
     }
-  }, [linkFetcher.data, shopify]);
+  }, [linkFetcher.data, toast]);
 
   const addRow = () => setPairs((prev) => [...prev, { key: "", value: "" }]);
   const removeRow = (index: number) =>
@@ -343,8 +356,7 @@ export default function ProductMappingPage() {
       : null;
 
   return (
-    <Page backAction={{ url: "/app/daraz/products" }}>
-      <TitleBar title={`Map: ${data.title}`} />
+    <Page backAction={{ url: "/app/daraz/products" }} title={`Map: ${data.title}`}>
       <BlockStack gap="400">
         <Card>
           <BlockStack gap="300">
@@ -539,6 +551,36 @@ export default function ProductMappingPage() {
         </BlockStack>
         </Card>
       </BlockStack>
+    </Page>
+  );
+}
+
+// Temporary: surfaces loader/action failures directly in the page instead of
+// them getting swallowed by the app-level ErrorBoundary (which can render as
+// a blank/broken panel inside the embedded admin iframe).
+export function ErrorBoundary() {
+  const error = useRouteError();
+  console.error("[Daraz mapping] route ErrorBoundary caught:", error);
+
+  if (isRouteErrorResponse(error)) {
+    return (
+      <Page backAction={{ url: "/app/daraz/products" }} title="Failed to load mapping page">
+        <Card>
+          <Text as="p" tone="critical">
+            {error.status} {error.statusText}: {String(error.data)}
+          </Text>
+        </Card>
+      </Page>
+    );
+  }
+
+  return (
+    <Page backAction={{ url: "/app/daraz/products" }} title="Failed to load mapping page">
+      <Card>
+        <Text as="p" tone="critical">
+          {error instanceof Error ? error.message : String(error)}
+        </Text>
+      </Card>
     </Page>
   );
 }

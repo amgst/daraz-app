@@ -2,7 +2,7 @@
 
 client_id = "d3fa46486613894daec5fcd4aa6a3806"
 application_url = "https://daraz-app-seven.vercel.app"
-embedded = true
+embedded = false
 name = "daraz"
 
 [access_scopes]

@@ -12,7 +12,6 @@ import {
   EmptyState,
   Link,
 } from "@shopify/polaris";
-import { TitleBar } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { DARAZ_SITES, isDarazCountry } from "../daraz/countries";
@@ -201,8 +200,7 @@ export default function Index() {
 
   if (!data.connected) {
     return (
-      <Page>
-        <TitleBar title="Daraz sync" />
+      <Page title="Daraz sync">
         <Card>
           <EmptyState
             heading="Connect your Daraz seller account to get started"
@@ -228,8 +226,7 @@ export default function Index() {
   };
 
   return (
-    <Page>
-      <TitleBar title="Daraz sync" />
+    <Page title="Daraz sync">
       <BlockStack gap="500">
         <Card>
           <BlockStack gap="300">
