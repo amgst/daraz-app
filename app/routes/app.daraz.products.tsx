@@ -228,7 +228,10 @@ export default function DarazProducts() {
             return (
               <ResourceItem
                 id={product.id}
-                onClick={() => navigate(`/app/daraz/products/${product.id}`)}
+                onClick={() => {
+                  console.log("[Daraz products] ResourceItem clicked, navigating to", `/app/daraz/products/${product.id}`);
+                  navigate(`/app/daraz/products/${product.id}`);
+                }}
                 media={
                   <Thumbnail
                     source={product.imageUrl || ""}
@@ -241,7 +244,10 @@ export default function DarazProducts() {
                   {
                     content:
                       product.syncStatus === "unmapped" ? "Map category" : "Edit mapping",
-                    onAction: () => navigate(`/app/daraz/products/${product.id}`),
+                    onAction: () => {
+                      console.log("[Daraz products] shortcut action clicked, navigating to", `/app/daraz/products/${product.id}`);
+                      navigate(`/app/daraz/products/${product.id}`);
+                    },
                   },
                   {
                     content: isSyncingThis ? "Syncing..." : "Sync now",
