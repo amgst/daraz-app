@@ -64,25 +64,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : {}),
   };
 
-  const [orders, totalCount, allForStats, distinctStatuses] = await Promise.all([
-    db.darazOrder.findMany({
-      where,
-      include: { items: true },
-      orderBy: [{ darazCreatedAt: "desc" }, { importedAt: "desc" }],
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-    }),
-    db.darazOrder.count({ where }),
-    db.darazOrder.findMany({
-      where: { shop: session.shop },
-      select: { status: true, totalAmount: true },
-    }),
-    db.darazOrder.findMany({
-      where: { shop: session.shop },
-      distinct: ["status"],
-      select: { status: true },
-    }),
-  ]);
+  // Sequential, not Promise.all: Supabase's pooled connection (pgbouncer,
+  // transaction mode) doesn't reliably support multiple concurrent queries
+  // from one Prisma client - running these in parallel intermittently threw
+  // PrismaClientUnknownRequestError in production.
+  const orders = await db.darazOrder.findMany({
+    where,
+    include: { items: true },
+    orderBy: [{ darazCreatedAt: "desc" }, { importedAt: "desc" }],
+    skip: (page - 1) * PAGE_SIZE,
+    take: PAGE_SIZE,
+  });
+  const totalCount = await db.darazOrder.count({ where });
+  const allForStats = await db.darazOrder.findMany({
+    where: { shop: session.shop },
+    select: { status: true, totalAmount: true },
+  });
+  const distinctStatuses = await db.darazOrder.findMany({
+    where: { shop: session.shop },
+    distinct: ["status"],
+    select: { status: true },
+  });
 
   const statsByStatus = new Map<string, { count: number; revenue: number }>();
   let totalRevenue = 0;

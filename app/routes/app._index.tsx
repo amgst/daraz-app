@@ -46,47 +46,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   trendStart.setDate(trendStart.getDate() - (TREND_DAYS - 1));
   trendStart.setHours(0, 0, 0, 0);
 
-  const [
-    mappingCounts,
-    pendingSyncJobs,
-    orderCount,
-    errorMappings,
-    unmappedMappings,
-    recentOrders,
-    trendOrders,
-    orderItems,
-  ] = await Promise.all([
-    db.productMapping.groupBy({
-      by: ["syncStatus"],
-      where: { shop: session.shop },
-      _count: true,
-    }),
-    db.syncJob.count({ where: { shop: session.shop, status: "pending" } }),
-    db.darazOrder.count({ where: { shop: session.shop } }),
-    db.productMapping.findMany({
-      where: { shop: session.shop, syncStatus: "error" },
-      orderBy: { updatedAt: "desc" },
-      take: ATTENTION_LIMIT,
-    }),
-    db.productMapping.findMany({
-      where: { shop: session.shop, syncStatus: "unmapped" },
-      orderBy: { updatedAt: "desc" },
-      take: ATTENTION_LIMIT,
-    }),
-    db.darazOrder.findMany({
-      where: { shop: session.shop },
-      orderBy: [{ darazCreatedAt: "desc" }, { importedAt: "desc" }],
-      take: RECENT_ORDERS_LIMIT,
-    }),
-    db.darazOrder.findMany({
-      where: { shop: session.shop, darazCreatedAt: { gte: trendStart } },
-      select: { darazCreatedAt: true, totalAmount: true },
-    }),
-    db.darazOrderItem.findMany({
-      where: { order: { shop: session.shop } },
-      select: { sku: true, name: true, price: true },
-    }),
-  ]);
+  // Sequential, not Promise.all: Supabase's pooled connection (pgbouncer,
+  // transaction mode) doesn't reliably support multiple concurrent queries
+  // from one Prisma client - running these in parallel intermittently threw
+  // PrismaClientUnknownRequestError in production.
+  const mappingCounts = await db.productMapping.groupBy({
+    by: ["syncStatus"],
+    where: { shop: session.shop },
+    _count: true,
+  });
+  const pendingSyncJobs = await db.syncJob.count({
+    where: { shop: session.shop, status: "pending" },
+  });
+  const orderCount = await db.darazOrder.count({ where: { shop: session.shop } });
+  const errorMappings = await db.productMapping.findMany({
+    where: { shop: session.shop, syncStatus: "error" },
+    orderBy: { updatedAt: "desc" },
+    take: ATTENTION_LIMIT,
+  });
+  const unmappedMappings = await db.productMapping.findMany({
+    where: { shop: session.shop, syncStatus: "unmapped" },
+    orderBy: { updatedAt: "desc" },
+    take: ATTENTION_LIMIT,
+  });
+  const recentOrders = await db.darazOrder.findMany({
+    where: { shop: session.shop },
+    orderBy: [{ darazCreatedAt: "desc" }, { importedAt: "desc" }],
+    take: RECENT_ORDERS_LIMIT,
+  });
+  const trendOrders = await db.darazOrder.findMany({
+    where: { shop: session.shop, darazCreatedAt: { gte: trendStart } },
+    select: { darazCreatedAt: true, totalAmount: true },
+  });
+  const orderItems = await db.darazOrderItem.findMany({
+    where: { order: { shop: session.shop } },
+    select: { sku: true, name: true, price: true },
+  });
 
   const countByStatus = Object.fromEntries(
     mappingCounts.map((c) => [c.syncStatus, c._count]),
