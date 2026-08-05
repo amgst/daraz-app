@@ -15,8 +15,8 @@ import {
   Select,
   Pagination,
 } from "@shopify/polaris";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { useToast } from "../components/ToastProvider";
 import db from "../db.server";
 import { importDarazOrders } from "../daraz/orders.server";
 import { DARAZ_SITES, isDarazCountry } from "../daraz/countries";
@@ -168,7 +168,7 @@ function buildUrl(params: Record<string, string | number>) {
 export default function DarazOrders() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const toast = useToast();
+  const shopify = useAppBridge();
   const navigate = useNavigate();
 
   const isSyncing = fetcher.state !== "idle";
@@ -178,17 +178,18 @@ export default function DarazOrders() {
   useEffect(() => {
     if (!fetcher.data) return;
     if (fetcher.data.ok) {
-      toast.show(
+      shopify.toast.show(
         `Synced orders: ${fetcher.data.imported} new, ${fetcher.data.updated} updated`,
       );
     } else {
-      toast.show(fetcher.data.error ?? "Order sync failed", { isError: true });
+      shopify.toast.show(fetcher.data.error ?? "Order sync failed", { isError: true });
     }
-  }, [fetcher.data, toast]);
+  }, [fetcher.data, shopify]);
 
   if (!data.connected) {
     return (
-      <Page title="Daraz orders">
+      <Page>
+        <TitleBar title="Daraz orders" />
         <Card>
           <EmptyState
             heading="Connect Daraz first"
@@ -215,7 +216,8 @@ export default function DarazOrders() {
   };
 
   return (
-    <Page title="Daraz orders">
+    <Page>
+      <TitleBar title="Daraz orders" />
       <BlockStack gap="400">
         <Card>
           <InlineStack align="space-between" blockAlign="center">

@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData } from "@remix-run/react";
+import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -12,9 +12,9 @@ import {
   ResourceItem,
   Thumbnail,
 } from "@shopify/polaris";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { useEffect } from "react";
 import { authenticate } from "../shopify.server";
-import { useToast } from "../components/ToastProvider";
 import db from "../db.server";
 import {
   syncProduct,
@@ -130,28 +130,30 @@ const STATUS_TONE: Record<string, "success" | "attention" | "critical" | "info">
 export default function DarazProducts() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const toast = useToast();
+  const shopify = useAppBridge();
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (!fetcher.data) return;
     if (fetcher.data.intent === "syncAll") {
-      toast.show(`Synced ${fetcher.data.processed} pending product(s)`);
+      shopify.toast.show(`Synced ${fetcher.data.processed} pending product(s)`);
     } else if (fetcher.data.intent === "pullFromDaraz") {
       const { productsChecked, productsUpdated, errors } = fetcher.data;
-      toast.show(
+      shopify.toast.show(
         `Checked ${productsChecked} product(s) on Daraz, updated ${productsUpdated} with new price/stock`,
         { isError: errors.length > 0 },
       );
     } else if (fetcher.data.ok) {
-      toast.show("Synced to Daraz");
+      shopify.toast.show("Synced to Daraz");
     } else {
-      toast.show(fetcher.data.error ?? "Sync failed", { isError: true });
+      shopify.toast.show(fetcher.data.error ?? "Sync failed", { isError: true });
     }
-  }, [fetcher.data, toast]);
+  }, [fetcher.data, shopify]);
 
   if (!data.connected) {
     return (
-      <Page title="Daraz products">
+      <Page>
+        <TitleBar title="Daraz products" />
         <Card>
           <EmptyState
             heading="Connect Daraz first"
@@ -175,7 +177,8 @@ export default function DarazProducts() {
       : null;
 
   return (
-    <Page title="Daraz products">
+    <Page>
+      <TitleBar title="Daraz products" />
       <div style={{ marginBottom: "1rem" }}>
         <Card>
           <InlineStack align="space-between" blockAlign="center">
@@ -225,7 +228,7 @@ export default function DarazProducts() {
             return (
               <ResourceItem
                 id={product.id}
-                url={`/app/daraz/products/${product.id}`}
+                onClick={() => navigate(`/app/daraz/products/${product.id}`)}
                 media={
                   <Thumbnail
                     source={product.imageUrl || ""}
@@ -238,7 +241,7 @@ export default function DarazProducts() {
                   {
                     content:
                       product.syncStatus === "unmapped" ? "Map category" : "Edit mapping",
-                    url: `/app/daraz/products/${product.id}`,
+                    onAction: () => navigate(`/app/daraz/products/${product.id}`),
                   },
                   {
                     content: isSyncingThis ? "Syncing..." : "Sync now",

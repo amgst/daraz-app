@@ -14,8 +14,8 @@ import {
   ResourceList,
   ResourceItem,
 } from "@shopify/polaris";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate, unauthenticated } from "../shopify.server";
-import { useToast } from "../components/ToastProvider";
 import db from "../db.server";
 import { getValidAccessToken } from "../daraz/tokens.server";
 import { getProducts, getRawProductDetail } from "../daraz/client.server";
@@ -150,27 +150,28 @@ export default function ImportFromDaraz() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const debugFetcher = useFetcher<typeof action>();
-  const toast = useToast();
+  const shopify = useAppBridge();
   const [debugItemId, setDebugItemId] = useState("");
 
   useEffect(() => {
     if (!fetcher.data || fetcher.data.intent !== "import") return;
     if (fetcher.data.ok) {
-      toast.show("Imported to Shopify");
+      shopify.toast.show("Imported to Shopify");
       if (fetcher.data.warnings.length > 0) {
-        toast.show(fetcher.data.warnings.join(" · "), { isError: true, duration: 8000 });
+        shopify.toast.show(fetcher.data.warnings.join(" · "), { isError: true, duration: 8000 });
       }
     } else {
-      toast.show(fetcher.data.error ?? "Import failed", { isError: true });
+      shopify.toast.show(fetcher.data.error ?? "Import failed", { isError: true });
     }
-  }, [fetcher.data, toast]);
+  }, [fetcher.data, shopify]);
 
   const rawResult = debugFetcher.data?.intent === "debugRaw" ? debugFetcher.data : null;
   const isFetchingRaw = debugFetcher.state !== "idle";
 
   if (!data.connected) {
     return (
-      <Page title="Import from Daraz">
+      <Page>
+        <TitleBar title="Import from Daraz" />
         <Card>
           <EmptyState
             heading="Connect Daraz first"
@@ -188,7 +189,8 @@ export default function ImportFromDaraz() {
     fetcher.state !== "idle" ? String(fetcher.formData?.get("itemId")) : null;
 
   return (
-    <Page title="Import from Daraz">
+    <Page>
+      <TitleBar title="Import from Daraz" />
       <div style={{ marginBottom: "1rem" }}>
         <Card>
           <BlockStack gap="200">
