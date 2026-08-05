@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
+import { useFetcher, useLoaderData } from "@remix-run/react";
 import {
   Page,
   Card,
@@ -131,7 +131,6 @@ export default function DarazProducts() {
   const data = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
-  const navigate = useNavigate();
 
   useEffect(() => {
     if (!fetcher.data) return;
@@ -228,10 +227,7 @@ export default function DarazProducts() {
             return (
               <ResourceItem
                 id={product.id}
-                onClick={() => {
-                  console.log("[Daraz products] ResourceItem clicked, navigating to", `/app/daraz/products/${product.id}`);
-                  navigate(`/app/daraz/products/${product.id}`);
-                }}
+                url={`/app/daraz/products/${product.id}`}
                 media={
                   <Thumbnail
                     source={product.imageUrl || ""}
@@ -244,10 +240,7 @@ export default function DarazProducts() {
                   {
                     content:
                       product.syncStatus === "unmapped" ? "Map category" : "Edit mapping",
-                    onAction: () => {
-                      console.log("[Daraz products] shortcut action clicked, navigating to", `/app/daraz/products/${product.id}`);
-                      navigate(`/app/daraz/products/${product.id}`);
-                    },
+                    url: `/app/daraz/products/${product.id}`,
                   },
                   {
                     content: isSyncingThis ? "Syncing..." : "Sync now",
