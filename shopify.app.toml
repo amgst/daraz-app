@@ -34,5 +34,19 @@ api_version = "2026-07"
   uri = "/webhooks/inventory_levels/update"
   topics = [ "inventory_levels/update" ]
 
+  # Mandatory GDPR compliance webhooks - required for Shopify App Store
+  # submission regardless of whether the app stores customer data.
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  topics = [ "shop/redact" ]
+
 [auth]
 redirect_urls = [ "https://daraz-app-seven.vercel.app/auth/callback" ]
